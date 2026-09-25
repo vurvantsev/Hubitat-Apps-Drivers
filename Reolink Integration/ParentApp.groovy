@@ -203,6 +203,8 @@ definition(
     iconUrl: "",
     iconX2Url: "",
     singleThreaded: true,
+    singleInstance: true,
+    installOnOpen: true,
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
