@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.6.6
+ * Version: 1.6.8
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -19,6 +19,22 @@
  * in-app Tips page, not duplicated here. TODO markers mark spots needing
  * exact command/param names verified against firmware (field names can
  * drift by version). Full history prior to 1.3.6 is in GitHub commit history.
+ *
+ * v1.6.8 -- Device page cleanup and spotlight auto (1.6.7 was internal only):
+ *  - Camera/Doorbell commands grouped into dropdowns (camera 21 to 9, doorbell
+ *    8 to 4); see the driver headers. hasSpotlight() now keys off setSpotlight.
+ *  - componentSetSpotlightAuto() sets WhiteLed "mode" (the Reolink app's
+ *    Spotlight > Modes: 0 = Off, 1 = Night Smart Mode, other values on some
+ *    models), separate from the on/off "state" Spotlight On/Off already uses.
+ *    Partial write {channel, mode}, so the light's current on/off is untouched.
+ *    Turning auto back on restores the mode the camera had before (kept in the
+ *    device's spotlightAutoMode data value), else Night Smart Mode.
+ *  - Called with on == null it only reads the mode. Check > abilities does
+ *    this for Spotlight devices, and so does Refresh, at most once every 10
+ *    minutes per device (SPOTLIGHT_READ_MIN_MS) to spare battery devices and
+ *    rules that refresh often.
+ *  - Tips: new Spotlight topic; PTZ, calibration and PIR topics use the new
+ *    command names. Topics missing from the order list are appended, not dropped.
  *
  * v1.6.6 -- Source password no longer shown in plain text:
  *  - Each bridge kept the source password in its state, so State Variables
@@ -280,7 +296,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.6.6"
+@Field static final String APP_VERSION = "1.6.8"
 
 // v1.6.5: power mode migration key; changing it re-runs migrateBatteryModes().
 @Field static final String POWER_MIGRATION_KEY = "batteryWired"
@@ -299,7 +315,7 @@ definition(
 // Poll interval is a device-level setting ONLY -- these are just the one-time
 // default applied to a newly created device, not user-configurable at the app
 // level. To change an existing device's interval, use its own device page (or
-// the Set Poll Interval / Set Snapshot Interval commands).
+// the Set Interval command).
 @Field static final Integer DEFAULT_WIRED_POLL_SEC = 3
 @Field static final Integer DEFAULT_BATTERY_POLL_SEC = 30
 
@@ -317,6 +333,10 @@ definition(
 // catch the case where that first-layer watchdog itself silently stops
 // running, not to compete with it on timing.
 @Field static final int SOURCE_STALE_AUDIT_THRESHOLD_SEC = 300
+
+// v1.6.8: Refresh reads a spotlight camera's mode at most this often (in memory, per device).
+@Field static final long SPOTLIGHT_READ_MIN_MS = 600000L
+@Field static java.util.concurrent.ConcurrentHashMap SPOTLIGHT_READ_AT = new java.util.concurrent.ConcurrentHashMap()
 
 // v1.6.2: scheduler tick rate while every source is event-connected (nothing to poll).
 @Field static final int IDLE_TICK_SEC = 30
@@ -921,22 +941,38 @@ private List tipsTopics() {
         [id: "ptz", label: "PTZ presets", title: "PTZ presets", group: "Camera controls", icon: "pi-arrows-alt",
             body: [
                 "<p>" + ("Reolink has no 'Home' command -- the equivalent is a saved preset. Use " +
-                "<b>savePresetHere</b> once (commonly preset ID 1) to save wherever the camera is currently " +
-                "pointed, then <b>ptzGoToPreset</b> with that ID any time to return there.") + "</p>"
+                "<b>Ptz Preset > save here</b> once (commonly preset ID 1) to save wherever the camera is currently " +
+                "pointed, then <b>Ptz Preset > go to</b> with that ID any time to return there.") + "</p>"
             ].join("")],
         [id: "calibration", label: "PTZ calibration", title: "PTZ calibration", group: "Camera controls", icon: "pi-compass",
             body: [
                 "<p>" + ("&#9888; Only applies to PTZ-capable cameras (e.g. Trackmix, E1 Zoom) -- non-PTZ cameras " +
-                "just harmlessly error if you try it. Use <b>calibratePtz</b> if preset recall starts " +
-                "drifting off target over time; check progress with <b>checkPtzCalibrationStatus</b> " +
-                "(Required / Running / Done).") + "</p>"
+                "just harmlessly error if you try it. Use <b>Ptz > Calibrate</b> if preset recall starts " +
+                "drifting off target over time. It then checks its own progress for a few minutes " +
+                "(ptzCalibrationStatus: Required / Running / Done), or use <b>Check > ptz calibration</b> any time.") + "</p>"
             ].join("")],
         [id: "pir", label: "PIR trigger", title: "PIR motion trigger", group: "Camera controls", icon: "pi-bolt",
             body: [
-                "<p>" + ("Use <b>pirOn</b>/<b>pirOff</b> to enable or disable a camera's PIR trigger without " +
+                "<p>" + ("Use <b>Set Pir</b> (on/off) to enable or disable a camera's PIR trigger without " +
                 "removing the device. Does NOT stop an in-progress recording -- it removes the trigger that " +
                 "would have woken a battery camera to record. Manual only, no auto-revert timer -- build " +
                 "battery-threshold automation with Rule Machine using the existing battery attribute.") + "</p>"
+            ].join("")],
+        [id: "spotlight", label: "Spotlight", title: "Spotlight and motion", group: "Camera controls", icon: "pi-sun",
+            body: [
+                "<p>" + ("<b>Set Spotlight</b> has two kinds of choices. <b>on</b>/<b>off</b> turn " +
+                "the light on or off right now. <b>auto on</b>/<b>auto off</b> control whether the " +
+                "camera turns the light on by itself for motion at night (Spotlight > Modes in the Reolink app: " +
+                "Night Smart Mode or Off). The <b>spotlightAuto</b> attribute shows the current setting. It updates right " +
+                "away when changed from Hubitat; a change made in the Reolink app shows after a Refresh (read at most every " +
+                "10 minutes) or <b>Check > abilities</b>.") + "</p>",
+                "<p>" + ("<b>Example:</b> keep the patio light from switching on every time you move while you're " +
+                "sitting outside. In Rule Machine, when a Patio switch turns on, use <b>Run Custom Action</b> to " +
+                "send <b>setSpotlight</b> with <b>auto off</b> to that camera. When it turns off, send <b>auto on</b>. " +
+                "One action can target several cameras at once.") + "</p>",
+                "<p>" + ("Turning auto off doesn't turn off a light that's already on; it goes off on its normal " +
+                "timer, or send <b>off</b> in the same rule. Auto on restores the mode the camera had " +
+                "before (for example a schedule), not always Night Smart Mode.") + "</p>"
             ].join("")],
         [id: "recording", label: "Recording presets", title: "Recording presets", group: "Recording & snapshots", icon: "pi-video",
             body: [
@@ -979,8 +1015,9 @@ private List tipsTopics() {
             ].join("")]
     ]
     def order = ["sources", "network", "compatibility", "removal", "ids", "polling", "events",
-                 "sleep", "firmware", "ptz", "calibration", "pir", "recording", "snapshots", "logging"]
-    order.collect { id -> topics.find { it.id == id } }
+                 "sleep", "firmware", "ptz", "calibration", "pir", "spotlight", "recording", "snapshots", "logging"]
+    // Topics missing from "order" are appended rather than silently dropped.
+    order.collect { id -> topics.find { it.id == id } }.findAll() + topics.findAll { !order.contains(it.id) }
 }
 
 /** Checks the minimum firmware that includes native source discovery.
@@ -3871,6 +3908,14 @@ def componentRefresh(child, String dni = null) {
             log.warn "Reolink ${effectiveDni}: power mode backfill failed -- ${e.message}"
         }
     }
+    if (hasSpotlight(c)) {
+        long nowMs = now()
+        Long last = SPOTLIGHT_READ_AT.get(effectiveDni) as Long
+        if (last == null || nowMs - last >= SPOTLIGHT_READ_MIN_MS) {
+            SPOTLIGHT_READ_AT.put(effectiveDni, nowMs)
+            try { componentSetSpotlightAuto(c, null, effectiveDni) } catch (e) { logFull "Reolink ${effectiveDni}: spotlight mode read failed -- ${e.message}" }
+        }
+    }
     pollChild([dni: effectiveDni])
 }
 
@@ -4012,6 +4057,53 @@ def componentSetSpotlight(child, Boolean on, String dni = null) {
     reolinkApiCall(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, state: (on ? 1 : 0)]], null)
 }
 
+/**
+ * v1.6.8: spotlight auto (motion) mode on/off; on == null reads only. Reads
+ * WhiteLed first to remember the current auto mode, then writes {channel, mode}.
+ */
+def componentSetSpotlightAuto(child, Boolean on, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    def current = reolinkApiCall(sourceId, "GetWhiteLed", [:], channel)
+    String key = (current instanceof Map) ? current.keySet().find { it.toString().equalsIgnoreCase("WhiteLed") } : null
+    Integer mode = (key && current[key] instanceof Map) ? toIntOrNull(current[key].mode) : null
+    if (mode == null) {
+        if (on == null) {
+            logFull "Reolink ${c.displayName}: no spotlight mode returned -- raw: ${current?.toString()?.take(300)}"
+        } else {
+            log.warn "Reolink ${c.displayName}: spotlight auto not changed -- the camera returned no spotlight settings (no spotlight, or it didn't answer)"
+        }
+        return
+    }
+    if (on == null || (on ? mode > 0 : mode == 0)) {
+        c.receiveSpotlightAuto(mode)
+        if (on != null) logNormal "Reolink ${c.displayName}: spotlight auto already ${spotlightModeName(mode)}"
+        return
+    }
+    if (mode > 0) c.receiveSpotlightAuto(mode)
+    Integer saved = toIntOrNull(c.getDataValue("spotlightAutoMode"))
+    int target = on ? ((saved != null && saved > 0) ? saved : 1) : 0
+    def result = reolinkApiCall(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, mode: target]], null)
+    if (result?.rspCode == 200 || result?.rspCode == 0) {
+        logNormal "Reolink ${c.displayName}: spotlight auto set to ${spotlightModeName(target)}"
+        c.receiveSpotlightAuto(target)
+    } else {
+        log.warn "Reolink ${c.displayName}: spotlight auto not changed -- the camera rejected the request (Full logging shows its reply)"
+    }
+}
+
+private String spotlightModeName(Integer mode) {
+    if (mode == 0) return "Off"
+    if (mode == 1) return "Night Smart Mode"
+    return "mode ${mode}"
+}
+
+private Integer toIntOrNull(v) {
+    if (v == null) return null
+    try { return v as Integer } catch (e) { return null }
+}
+
 def componentSetNightVision(child, String mode, String dni = null) {
     def c = resolveChild(child, dni)
     def sourceId = c.getDataValue("sourceId") as Integer
@@ -4085,6 +4177,12 @@ def componentCheckAbilities(child, String dni = null) {
     def features = computeSupportedFeatures(abilityChnList?.getAt(channel))
     c.receiveSupportedFeatures(features)
     logNormal "Reolink source ${sourceId} ch ${channel}: capabilities rechecked -- ${features ? features.join(', ') : 'none detected'}"
+    if (features?.contains("Spotlight") && c.hasCommand("setSpotlight")) componentSetSpotlightAuto(c, null, dni)
+}
+
+/** Spotlight devices on the camera driver (doorbells have no spotlight commands). */
+private boolean hasSpotlight(c) {
+    return c?.hasCommand("setSpotlight") && c.currentValue("supportedFeatures")?.toString()?.contains("Spotlight")
 }
 
 def componentCalibratePtz(child, String dni = null) {
