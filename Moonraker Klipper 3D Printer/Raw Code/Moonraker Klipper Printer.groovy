@@ -2,8 +2,8 @@
  *  Moonraker / Klipper 3D Printer Driver for Hubitat
  *
  *  Author:  jdthomas24
- *  Version: 1.0.48
- *  Date:    2026-05-25
+ *  Version: 1.0.49
+ *  Date:    2026-10-09
  *
  *  Copyright 2026
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
@@ -35,14 +35,21 @@
  *    marcolivierarsenault - moonraker-home-assistant
  *    Arksine - Moonraker
  *
+ *  Changes in 1.0.49:
+ *    - Dashboard tiles now display. Dashboards only show attribute values up to 1024 bytes,
+ *      and the old tiles were ~3700. aaStatusTile and filesListTile are now compact tiles that
+ *      stay under the limit (works on local and remote dashboards), scaling with tile width.
+ *      Standby shows the last completed print. Files list shows as many recent prints as fit.
+ *    - "Buy me a coffee" link at the top of Preferences, under the setup tip.
+ *
  *  Changes in 1.0.48:
  *    - Consecutive failure threshold before marking offline (3 failures required)
  *      Transient timeouts and brief Moonraker restarts no longer immediately flip status
  *      Failure counter resets on any successful poll
  *    - Auto-reconnect: statusCallback now detects a successful 200 response while
  *      marked offline and calls getInfo() to properly restore online state without
- *      manual intervention — hub fully self-heals after internet or Moonraker outage
- *    - Status tile now correctly reflects offline state — tile rebuilds immediately
+ *      manual intervention. Hub fully self-heals after internet or Moonraker outage
+ *    - Status tile now correctly reflects offline state. Tile rebuilds immediately
  *      when setOffline() fires showing offline badge instead of stuck "online"
  *    - Offline tile rebuilds with last known temps and state rather than blank values
  *
@@ -52,7 +59,7 @@
  *    - aaStatusTile fingerprint suppression (Option D)
  *    - filesListTile suppressed when content unchanged
  */
-public static String version() { return "1.0.48" }
+public static String version() { return "1.0.49" }
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
@@ -92,15 +99,16 @@ metadata {
 
 preferences {
     input(name: "setupTip", type: "hidden", title: """<div style='background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:8px;margin-bottom:8px;font-size:12px;'>
-        <b>⚠️ Setup Tip:</b> Name this Hubitat device to match your printer <i>before</i> saving preferences — e.g. "3D - CR10 Pro 1".<br>
+        <b>⚠️ Setup Tip:</b> Name this Hubitat device to match your printer <i>before</i> saving preferences, e.g. "3D - CR10 Pro 1".<br>
         The device name appears in <b>Printer Info</b> so you can confirm you have the correct port assigned to the right printer.<br>
         <b>Sonicpad users:</b> create one Hubitat device per printer, each with the same IP but a different port.
         </div>""")
+    input(name: "supportLink", type: "hidden", title: """<div style='font-size:13px;color:#555;margin:-2px 0 8px;'>Enjoying this driver? <a href='https://www.paypal.com/paypalme/jdthomas24' target='_blank' rel='noopener'>Buy me a coffee &#9749;</a></div>""")
     input(name: "ipAddress",      type: "string",   title: "<b>Printer IP Address:</b>",
-          description: "<i>IP address of your Moonraker host.<br>Sonicpad users: all printers share the same IP — use Port to differentiate.</i>",
+          description: "<i>IP address of your Moonraker host.<br>Sonicpad users: all printers share the same IP. Use Port to differentiate.</i>",
           required: true, width: 4)
     input(name: "port",           type: "string",   title: "<b>Moonraker Port:</b>",
-          description: "<i>Default is 7125.<br><b>Sonicpad (4 USB ports):</b> Port 1=7125, Port 2=7126, Port 3=7127, Port 4=7128<br>Use the port matching your printer's USB port — unconnected ports will show offline.<br><b>Standard install:</b> check your moonraker.conf for the configured port</i>",
+          description: "<i>Default is 7125.<br><b>Sonicpad (4 USB ports):</b> Port 1=7125, Port 2=7126, Port 3=7127, Port 4=7128<br>Use the port matching your printer's USB port. Unconnected ports will show offline.<br><b>Standard install:</b> check your moonraker.conf for the configured port</i>",
           defaultValue: "7125", required: true, width: 4)
     input(name: "useSSL",         type: "bool",     title: "<b>Use HTTPS:</b>",
           description: "<i>Enable only if your Moonraker uses SSL. Most local installs do not.</i>",
@@ -111,7 +119,7 @@ preferences {
     input(name: "pollInterval",   type: "enum",     title: "<b>Poll Interval:</b>",
           options: ["10": "10 Seconds", "30": "30 Seconds", "60": "1 Minute", "300": "5 Minutes"],
           defaultValue: "30", required: true, width: 4,
-          description: "<i>Standby poll rate — how often to check when the printer is idle.<br>While printing or paused, the driver automatically switches to 30s regardless of this setting.</i>")
+          description: "<i>Standby poll rate, how often to check when the printer is idle.<br>While printing or paused, the driver automatically switches to 30s regardless of this setting.</i>")
     input(name: "offlineThreshold", type: "number", title: "<b>Offline Failure Threshold:</b>",
           description: "<i>Number of consecutive failed polls before marking printer offline. Default 3. Increase to tolerate brief Moonraker restarts without flipping status.</i>",
           defaultValue: 3, required: true, width: 4)
@@ -134,7 +142,15 @@ def installed() {
 def updated() {
     cleanStaleState()
     cleanStaleAttributes()
+    cleanStaleTileFiles()
     initialize()
+}
+
+// Pre-release 1.0.49 builds saved tiles to File Manager; remove any left behind.
+void cleanStaleTileFiles() {
+    ["aaStatusTile", "aaStatusTileFull", "filesListTile", "filesListTileFull"].each { a ->
+        try { deleteHubFile("moonraker-${device.id}-${a}.html") } catch (e) { }
+    }
 }
 
 void cleanStaleState() {
@@ -298,7 +314,7 @@ void serverInfoCallback(resp, data) {
         Map result = json?.result ?: [:]
         String version = result?.moonraker_version ?: result?.api_version_string ?: ""
         if (version && version != "?") { logDebug "moonraker version: $version" }
-        else { logDebug "moonraker version unavailable (Sonicpad returns ? — this is normal)" }
+        else { logDebug "moonraker version unavailable (Sonicpad returns ?, this is normal)" }
     } catch (e) {
         logWarn "serverInfoCallback() parse error: $e"
     }
@@ -336,7 +352,7 @@ void recordFailure() {
 
 void recordSuccess() {
     if ((state.consecutiveFailures ?: 0) > 0) {
-        logDebug "consecutive failures reset — poll succeeded"
+        logDebug "consecutive failures reset, poll succeeded"
     }
     state.consecutiveFailures = 0
 }
@@ -387,10 +403,10 @@ void statusCallback(resp, data) {
 
     recordSuccess()
 
-    // v1.0.48: auto-reconnect — if we get a successful response while marked offline,
+    // v1.0.48: auto-reconnect. If we get a successful response while marked offline,
     // call getInfo() to properly restore online state without manual intervention
     if (device.currentValue("healthStatus") == "offline") {
-        logInfo "printer responding again — re-establishing online state"
+        logInfo "printer responding again, re-establishing online state"
         getInfo()
         return
     }
@@ -513,9 +529,9 @@ void statusCallback(resp, data) {
                             hotendVal, hotendTarg, bedVal, bedTarg,
                             fanPct, filamentDetected, filamentUsed,
                             printTimeMin, remainingNow, etaNow)
-            logDebug "tile updated — fingerprint: ${tileFingerprint}"
+            logDebug "tile updated, fingerprint: ${tileFingerprint}"
         } else {
-            logDebug "tile suppressed — fingerprint unchanged: ${tileFingerprint}"
+            logDebug "tile suppressed, fingerprint unchanged: ${tileFingerprint}"
         }
 
     } catch (e) {
@@ -531,120 +547,84 @@ void buildOnlineTile(String printState, String filenameClean, Integer progressIn
                      Double bedVal, Double bedTarg, Integer fanPct,
                      String filamentDetected, Double filamentUsed,
                      Integer printTimeMin, Integer remainingNow, String etaNow) {
-
-    String klipperStateNow = state?.lastKlipperState ?: device.currentValue("klipperState") ?: "unknown"
-    String printerName     = device.displayName
-    String hostname        = state?.hostname ?: ""
-    String port            = settings?.port ?: ""
-    String filenameNow     = filenameClean ?: "none"
-
-    String stateBg    = printState == "printing" ? "#1b4332" : printState == "paused" ? "#3d2b00" : printState == "error" ? "#3d0000" : "#16213e"
-    String stateColor = printState == "printing" ? "#00ff87" : printState == "paused" ? "#ffd166" : printState == "error" ? "#ff6b6b" : "#aaa"
-    String stateIcon  = printState == "printing" ? "&#9654; " : printState == "paused" ? "&#9646;&#9646; " : printState == "error" ? "&#9888; " : ""
-    String klipperBg  = klipperStateNow == "ready" ? "#16213e" : "#3d0000"
-    String klipperCol = klipperStateNow == "ready" ? "#00b4d8" : "#ff6b6b"
-
-    StringBuilder tile = new StringBuilder()
-    tile.append("<div style=\"font-family:sans-serif;font-size:12px;background:#1a1a2e;border-radius:10px;overflow:hidden;\">")
-
-    tile.append("<div style=\"background:#0f3460;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;\">")
-    tile.append("<div><div style=\"color:#00b4d8;font-weight:bold;font-size:13px;\">${printerName}</div>")
-    if (hostname) tile.append("<div style=\"color:#aaa;font-size:10px;\">${hostname} &middot; port ${port}</div>")
-    tile.append("</div>")
-    tile.append("<div style=\"display:flex;gap:6px;align-items:center;\">")
-    tile.append("<span style=\"background:#1b4332;color:#00ff87;font-size:10px;padding:2px 8px;border-radius:10px;\">&#9679; online</span>")
-    tile.append("<span style=\"background:${klipperBg};color:${klipperCol};font-size:10px;padding:2px 8px;border-radius:10px;\">klipper: ${klipperStateNow}</span>")
-    tile.append("</div></div>")
-
-    tile.append("<div style=\"background:#16213e;border-bottom:1px solid #0f3460;padding:6px 12px;display:flex;align-items:center;gap:8px;\">")
-    tile.append("<span style=\"background:${stateBg};color:${stateColor};font-size:10px;padding:2px 10px;border-radius:10px;font-weight:bold;\">${stateIcon}${printState}</span>")
-    if (filenameNow != "none") tile.append("<span style=\"color:#eee;font-size:11px;font-weight:bold;\">${filenameNow}</span>")
-    tile.append("</div>")
-
+    boolean ready = (state?.lastKlipperState ?: device.currentValue("klipperState")) == "ready"
     String errorVal = device.currentValue("error") ?: "none"
-    if (errorVal && errorVal != "none") {
-        tile.append("<div style=\"background:#3d0000;border-left:3px solid #ff6b6b;padding:6px 12px;\">")
-        tile.append("<span style=\"color:#ffaaaa;font-size:11px;\">&#9888; ${errorVal}</span>")
-        tile.append("</div>")
-    }
-
-    tile.append("<div style=\"padding:8px 12px;\">")
-    tile.append("<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;\">")
-    tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
-    tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">HOTEND</div>")
-    tile.append("<div style=\"display:flex;align-items:baseline;gap:4px;\"><span style=\"color:#ff6b6b;font-size:16px;font-weight:bold;\">${hotendVal}°</span>")
-    tile.append("<span style=\"color:#888;font-size:10px;\">/ ${hotendTarg}° target</span></div></div>")
-    tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
-    tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">BED</div>")
-    tile.append("<div style=\"display:flex;align-items:baseline;gap:4px;\"><span style=\"color:#ffa94d;font-size:16px;font-weight:bold;\">${bedVal}°</span>")
-    tile.append("<span style=\"color:#888;font-size:10px;\">/ ${bedTarg}° target</span></div></div>")
-    tile.append("</div>")
-
-    if (printState in ["printing", "paused"]) {
-        tile.append("<div style=\"margin-bottom:6px;\">")
-        tile.append("<div style=\"display:flex;justify-content:space-between;margin-bottom:3px;\"><span style=\"color:#aaa;font-size:10px;\">progress</span><span style=\"color:#eee;font-size:10px;font-weight:bold;\">${progressRounded}%</span></div>")
-        tile.append("<div style=\"background:#0f3460;border-radius:3px;height:5px;\"><div style=\"background:#00b4d8;width:${progressRounded}%;height:5px;border-radius:3px;\"></div></div></div>")
-
-        tile.append("<div style=\"display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px;\">")
-        tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">elapsed</div><div style=\"color:#eee;font-size:11px;font-weight:bold;\">${printTimeMin} min</div></div>")
-        tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">remaining</div><div style=\"color:#00ff87;font-size:11px;font-weight:bold;\">${remainingNow} min</div></div>")
-        tile.append("<div style=\"background:#0f3460;border-radius:5px;padding:5px 8px;text-align:center;\"><div style=\"color:#aaa;font-size:9px;\">ETA</div><div style=\"color:#eee;font-size:11px;font-weight:bold;\">${etaNow}</div></div>")
-        tile.append("</div>")
-    }
-
-    String filamentStatus = filamentDetected == "true" ? "OK" : filamentDetected == "false" ? "RUNOUT!" : "unknown"
-    String filamentCol    = filamentDetected == "false" ? "#ff6b6b" : "#888"
-    Integer filamentInt   = filamentUsed.toInteger()
-    tile.append("<div style=\"border-top:1px solid #0f3460;padding:5px 12px;display:flex;justify-content:space-between;align-items:center;margin-top:2px;\">")
-    tile.append("<span style=\"color:#888;font-size:9px;\">fan: ${fanPct}% &nbsp;&middot;&nbsp; filament: <span style=\"color:${filamentCol}\">${filamentStatus}</span> &nbsp;&middot;&nbsp; ${filamentInt}mm used</span>")
-    tile.append("<span style=\"color:#888;font-size:9px;\">")
-    Integer completedCount = state?.completedCount ?: 0
-    if (completedCount > 0) tile.append("${completedCount} prints done")
-    tile.append("</span>")
-    tile.append("</div></div></div>")
-
-    sendEvent(name: "aaStatusTile", value: tile.toString(), displayed: false)
+    Map m = [state: printState, file: filenameClean, progress: progressRounded, hotend: hotendVal, hotendTarg: hotendTarg,
+             bed: bedVal, bedTarg: bedTarg, elapsed: printTimeMin, remaining: remainingNow, eta: etaNow,
+             filament: filamentDetected, ready: ready, error: errorVal]
+    String html = compactStatusTile(m, 26, 40)
+    if (html.getBytes("UTF-8").length > 1024) html = compactStatusTile(m, 12, 0)
+    sendCompact("aaStatusTile", html)
 }
 
 void buildOfflineTile() {
-    String printerName = device.displayName
-    String hostname    = state?.hostname ?: ""
-    String port        = settings?.port ?: ""
-
-    // Use last known temps if available, otherwise show --
-    String hotendStr = state?.lastHotendVal != null ? "${state.lastHotendVal}°" : "--"
-    String bedStr    = state?.lastBedVal    != null ? "${state.lastBedVal}°"    : "--"
-
-    StringBuilder tile = new StringBuilder()
-    tile.append("<div style=\"font-family:sans-serif;font-size:12px;background:#1a1a2e;border-radius:10px;overflow:hidden;\">")
-
-    // Header — offline badge
-    tile.append("<div style=\"background:#0f3460;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;\">")
-    tile.append("<div><div style=\"color:#00b4d8;font-weight:bold;font-size:13px;\">${printerName}</div>")
-    if (hostname) tile.append("<div style=\"color:#aaa;font-size:10px;\">${hostname} &middot; port ${port}</div>")
-    tile.append("</div>")
-    tile.append("<div style=\"display:flex;gap:6px;align-items:center;\">")
-    tile.append("<span style=\"background:#3d0000;color:#ff6b6b;font-size:10px;padding:2px 8px;border-radius:10px;\">&#9679; offline</span>")
-    tile.append("</div></div>")
-
-    // Offline banner
-    tile.append("<div style=\"background:#3d0000;border-left:3px solid #ff6b6b;padding:8px 12px;\">")
-    tile.append("<span style=\"color:#ffaaaa;font-size:11px;\">&#9888; Printer is offline — attempting to reconnect</span>")
-    tile.append("</div>")
-
-    // Last known temps
-    tile.append("<div style=\"padding:8px 12px;\">")
-    tile.append("<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;\">")
-    tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
-    tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">HOTEND (last known)</div>")
-    tile.append("<div style=\"color:#888;font-size:16px;font-weight:bold;\">${hotendStr}</div></div>")
-    tile.append("<div style=\"background:#0f3460;border-radius:6px;padding:6px 10px;\">")
-    tile.append("<div style=\"color:#aaa;font-size:9px;margin-bottom:2px;\">BED (last known)</div>")
-    tile.append("<div style=\"color:#888;font-size:16px;font-weight:bold;\">${bedStr}</div></div>")
-    tile.append("</div></div></div>")
-
-    sendEvent(name: "aaStatusTile", value: tile.toString(), displayed: false)
+    String hotendStr = state?.lastHotendVal != null ? "${state.lastHotendVal}&deg;" : "--"
+    String bedStr    = state?.lastBedVal    != null ? "${state.lastBedVal}&deg;"    : "--"
+    sendCompact("aaStatusTile", compactWrap(
+        "<div><b style='color:#00b4d8'>${shorten(device.displayName, 28)}</b> <span style='color:#ff6b6b'>&#9679;</span></div>" +
+        "<div style='color:#ff6b6b'>&#9888; Offline, reconnecting</div>" +
+        "<div style='color:#888'>Last known: Hotend ${hotendStr} &middot; Bed ${bedStr}</div>"))
     logDebug "offline tile built"
+}
+
+// ============================================================
+//  DASHBOARD TILES
+// ============================================================
+// Dashboards only show attribute values up to 1024 bytes, so tiles are kept compact and inline.
+// Outer div is the size container; inner text scales with it (cqw is relative to the parent container).
+String compactWrap(String inner) {
+    return "<div style='height:100%;box-sizing:border-box;padding:4%;container-type:inline-size;background:#1a1a2e;border-radius:10px'>" +
+        "<div style='height:100%;font:4.6cqw/1.35 sans-serif;color:#ddd;text-align:left;text-shadow:none;" +
+        "display:flex;flex-direction:column;justify-content:space-around'>${inner}</div></div>"
+}
+
+String shorten(String text, int max) {
+    if (!text || max <= 0) return ""
+    return text.length() > max ? text.substring(0, max - 1) + "&hellip;" : text
+}
+
+// fileMax/errorMax shrink on a second pass if the tile would pass 1024 bytes.
+String compactStatusTile(Map m, int fileMax, int errorMax) {
+    String st = m.state
+    String stateCol = st == "printing" ? "#00ff87" : st == "paused" ? "#ffd166" : st == "error" ? "#ff6b6b" : "#aaa"
+    String icon = st == "printing" ? "&#9654; " : st == "paused" ? "&#9646;&#9646; " : ""
+    boolean active = st in ["printing", "paused"]
+    StringBuilder t = new StringBuilder()
+    t.append("<div><b style='color:#00b4d8'>${shorten(device.displayName, 28)}</b> <span style='color:${m.ready ? '#00ff87' : '#ffd166'}'>&#9679;</span></div>")
+    t.append("<div style='color:${stateCol};white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>${icon}${st}")
+    if (active && m.file && m.file != "none") t.append(" &middot; <span style='color:#eee'>${shorten(m.file, fileMax)}</span>")
+    t.append("</div>")
+    t.append("<div>Hotend <b style='color:#ff6b6b'>${m.hotend}&deg;</b>/${(m.hotendTarg as Double).toInteger()} &middot; " +
+             "Bed <b style='color:#ffa94d'>${m.bed}&deg;</b>/${(m.bedTarg as Double).toInteger()}</div>")
+    if (active) {
+        t.append("<div style='background:#0f3460;height:.4em;border-radius:1em'><div style='background:#00b4d8;width:${m.progress}%;height:100%;border-radius:1em'></div></div>")
+        t.append("<div>${m.progress}% &middot; ${m.elapsed}m &middot; <span style='color:#00ff87'>${m.remaining}m left</span> &middot; ${m.eta}</div>")
+    } else {
+        String last = device.currentValue("lastPrint") ?: ""
+        if (last && last != "none") t.append("<div style='color:#888'>Last: <span style='color:#ddd'>${shorten(last, fileMax)}</span></div>")
+    }
+    if (m.filament == "false") t.append("<div style='color:#ff6b6b'>&#9888; Filament runout</div>")
+    if (errorMax > 0 && m.error && m.error != "none") t.append("<div style='color:#ff6b6b'>&#9888; ${shorten(m.error, errorMax)}</div>")
+    return compactWrap(t.toString())
+}
+
+// Adds rows until the next one would pass the limit.
+String compactFilesTile(List files, Integer total) {
+    String head = "<div style='color:#00b4d8;font-weight:bold'>Recent prints <span style='color:#888;font-weight:normal'>(${total} jobs)</span></div>"
+    StringBuilder rows = new StringBuilder()
+    for (int i = 0; i < files.size(); i++) {
+        Map f = files[i]
+        String row = "<div><span style='color:#00b4d8'>${i + 1}</span> ${shorten(f.name, 30)}${f.status == 'in_progress' ? ' &#9654;' : ''}</div>"
+        if (compactWrap(head + rows + row).getBytes("UTF-8").length > 1000) break
+        rows.append(row)
+    }
+    return compactWrap(head + rows)
+}
+
+void sendCompact(String attr, String html) {
+    int size = html.getBytes("UTF-8").length
+    if (size > 1024) logWarn "${attr} is ${size} bytes, over the dashboard limit"
+    sendEventX(name: attr, value: html)
 }
 
 // ============================================================
@@ -854,45 +834,14 @@ void filesCallback(resp, data) {
         sendEventX(name: "filesList (11-20)", value: (secondTen ? secondTen.join(" | ") : "none"))
 
         Integer totalJobCount = totalJobs ?: totalCount
-        StringBuilder html = new StringBuilder()
-        html.append("<div style=\"font-family:sans-serif;font-size:11px;background:#1a1a2e;color:#eee;border-radius:8px;padding:8px;\">")
-        html.append("<div style=\"text-align:center;font-weight:bold;font-size:12px;color:#00b4d8;margin-bottom:6px;\">")
-        html.append("&#128438; Recent Prints <span style=\"color:#aaa;font-size:10px;\">(top ${recentFilesForTile.size()} of ${totalJobCount} jobs)</span></div>")
-
-        String lastPrintVal        = device.currentValue("lastPrint") ?: ""
-        String currentPrintState   = device.currentValue("printState") ?: "standby"
-        if (lastPrintVal && lastPrintVal != "none" && !(currentPrintState in ["printing", "paused"])) {
-            html.append("<div style=\"background:#16213e;border-left:3px solid #00ff87;padding:4px 8px;margin-bottom:6px;\">")
-            html.append("<div style=\"font-size:9px;color:#aaa;\">last completed &middot; use startLastPrint to reprint</div>")
-            html.append("<div style=\"color:#00ff87;font-weight:bold;font-size:11px;margin-top:1px;\">${lastPrintVal}</div>")
-            html.append("</div>")
-        }
-
-        html.append("<table style=\"width:100%;border-collapse:collapse;\">")
-        recentFilesForTile.eachWithIndex { file, idx ->
-            String number      = (idx + 1).toString()
-            Boolean isPrinting = file.status == "in_progress"
-            String rowBg       = isPrinting ? "#1b4332" : (idx % 2 == 0 ? "#16213e" : "#0f3460")
-            String numColor    = isPrinting ? "#00ff87" : "#00b4d8"
-            String nameColor   = isPrinting ? "#00ff87" : "#eee"
-            String indicator   = isPrinting ? " &#9654; printing" : ""
-            html.append("<tr style=\"background:${rowBg};\">")
-            html.append("<td style=\"padding:3px 5px;color:${numColor};font-weight:bold;width:24px;min-width:24px;text-align:center;\">${number}</td>")
-            html.append("<td style=\"padding:3px 5px;color:${nameColor};\">${file.name}${indicator}</td></tr>")
-        }
-        html.append("</table>")
-        html.append("<div style=\"color:#888;font-size:9px;margin-top:4px;text-align:center;\">Use number with startPrint command</div>")
-        html.append("</div>")
-
-        String newHtml = html.toString()
+        String newHtml  = compactFilesTile(recentFilesForTile, totalJobCount)
         String newHash  = newHtml.hashCode().toString()
-        String lastHash = state?.lastFilesListHash ?: ""
-        if (newHash != lastHash) {
+        if (newHash != (state?.lastFilesListHash ?: "")) {
             state.lastFilesListHash = newHash
-            sendEventX(name: "filesListTile", value: newHtml)
-            logDebug "filesListTile updated — ${displayList.size()} files"
+            sendCompact("filesListTile", newHtml)
+            logDebug "filesListTile updated, ${displayList.size()} files"
         } else {
-            logDebug "filesListTile suppressed — content unchanged"
+            logDebug "filesListTile suppressed, content unchanged"
         }
 
     } catch (e) {
@@ -903,7 +852,7 @@ void filesCallback(resp, data) {
 def startPrint(String filename) {
     if (!filename) { logWarn "startPrint() no filename provided"; return }
     if (device.currentValue("printState") == "printing") {
-        logWarn "startPrint() rejected — printer is already printing"
+        logWarn "startPrint() rejected, printer is already printing"
         return
     }
     String resolvedFile = filename.trim()
@@ -914,7 +863,7 @@ def startPrint(String filename) {
             logInfo "startPrint() resolved #${resolvedFile} -> ${mapped}"
             resolvedFile = mapped
         } else {
-            logWarn "startPrint() no file found for number ${resolvedFile} — run refreshFileList first"
+            logWarn "startPrint() no file found for number ${resolvedFile}, run refreshFileList first"
             return
         }
     }

@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.6.8
+ * Version: 1.6.9
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -19,6 +19,15 @@
  * in-app Tips page, not duplicated here. TODO markers mark spots needing
  * exact command/param names verified against firmware (field names can
  * drift by version). Full history prior to 1.3.6 is in GitHub commit history.
+ *
+ * v1.6.9 -- Device Bridge page cleanup (see the bridge header): On/Off bare,
+ *    Push without a number warns, blank Load Preset loads the Preferences pick,
+ *    one Event Connection dropdown, Recording dropdown.
+ *  - Manual Record (camera and doorbell): componentSetManualRecord() sends
+ *    SetManualRec {channel, enable, duration}, the call Home Assistant uses.
+ *    Optional seconds (default and max 600); the app sends off at that time.
+ *  - Tips: new Manual recording topic; PIR (Pre-recording) and Recording
+ *    presets updated.
  *
  * v1.6.8 -- Device page cleanup and spotlight auto (1.6.7 was internal only):
  *  - Camera/Doorbell commands grouped into dropdowns (camera 21 to 9, doorbell
@@ -296,7 +305,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.6.8"
+@Field static final String APP_VERSION = "1.6.9"
 
 // v1.6.5: power mode migration key; changing it re-runs migrateBatteryModes().
 @Field static final String POWER_MIGRATION_KEY = "batteryWired"
@@ -956,7 +965,10 @@ private List tipsTopics() {
                 "<p>" + ("Use <b>Set Pir</b> (on/off) to enable or disable a camera's PIR trigger without " +
                 "removing the device. Does NOT stop an in-progress recording -- it removes the trigger that " +
                 "would have woken a battery camera to record. Manual only, no auto-revert timer -- build " +
-                "battery-threshold automation with Rule Machine using the existing battery attribute.") + "</p>"
+                "battery-threshold automation with Rule Machine using the existing battery attribute.") + "</p>",
+                "<p>" + ("Turning PIR off while you're home is a good way to stop recordings and alerts without " +
+                "24/7 recording. If the camera still records with PIR off, turn off <b>Pre-recording</b> for " +
+                "that camera in the Reolink app.") + "</p>"
             ].join("")],
         [id: "spotlight", label: "Spotlight", title: "Spotlight and motion", group: "Camera controls", icon: "pi-sun",
             body: [
@@ -989,7 +1001,22 @@ private List tipsTopics() {
                 "for continuous (\"TIMING\") and separate tables per AI type -- but a preset here sets all of " +
                 "them to the same hours. So \"Continuous 6pm-6am\" also limits AI-triggered clips to that same " +
                 "window. To get continuous-only-at-certain-hours while still catching AI events any time, use " +
-                "two presets (e.g. \"Daytime\"/\"Nighttime\") switched by a time-based Rule Machine schedule.") + "</p>"
+                "two presets (e.g. \"Daytime\"/\"Nighttime\") switched by a time-based Rule Machine schedule.") + "</p>",
+                "<p>" + ("<b>Presets set schedules, they don't start a recording.</b> To record right now, use the " +
+                "camera's <b>Manual Record</b> command (see Manual recording). Recording control was built and tested " +
+                "on an NVR; on a Home Hub it's untested. Battery cameras usually record on events only, so a 24/7 " +
+                "schedule may not apply to them.") + "</p>"
+            ].join("")],
+        [id: "manualrec", label: "Manual recording", title: "Manual recording", group: "Recording & snapshots", icon: "pi-circle-fill",
+            body: [
+                "<p>" + ("Use <b>Manual Record</b> on a camera or doorbell to start recording now, for example when " +
+                "motion is detected. Turn it <b>on</b> with an optional number of seconds (1 to 600, default 600, " +
+                "the camera's limit); it stops by itself after that, or use <b>off</b> to stop sooner. The " +
+                "<b>Manual Record</b> attribute shows on/off. Recordings go wherever the camera or its Home Hub/NVR " +
+                "normally stores them.") + "</p>",
+                "<p>" + ("&#9888; <b>Battery cameras stay awake while recording</b>, so use short times there. A " +
+                "change made in the Reolink app isn't shown here. If a camera doesn't support manual recording, " +
+                "the app logs a warning and nothing changes.") + "</p>"
             ].join("")],
         [id: "snapshots", label: "Snapshot tiles", title: "Snapshot tiles on dashboards", group: "Recording & snapshots", icon: "pi-image",
             body: [
@@ -1015,7 +1042,7 @@ private List tipsTopics() {
             ].join("")]
     ]
     def order = ["sources", "network", "compatibility", "removal", "ids", "polling", "events",
-                 "sleep", "firmware", "ptz", "calibration", "pir", "spotlight", "recording", "snapshots", "logging"]
+                 "sleep", "firmware", "ptz", "calibration", "pir", "spotlight", "recording", "manualrec", "snapshots", "logging"]
     // Topics missing from "order" are appended rather than silently dropped.
     order.collect { id -> topics.find { it.id == id } }.findAll() + topics.findAll { !order.contains(it.id) }
 }
@@ -2384,7 +2411,7 @@ private String presetsGuidanceHtml(String sourceLabel) {
   <div class='reolink-status-heading font-semibold text-blue-700'><i class='pi pi-cog mr-2' aria-hidden='true'></i>Rule Machine shortcuts</div>
   <div class='text-base mt-2'>Use <b>Reolink Device Bridge (${discoveryEscapeHtml(sourceLabel)})</b> in Rule Machine's standard Switch and Button pickers. No Custom Action is needed.</div>
   <div class='text-base mt-2'><b>Switch on/off:</b> controls master recording for all channels.<br><b>Push button N:</b> loads the preset labeled Button N.</div>
-  <div class='text-base mt-2'>You can also use the bridge's <b>Load Selected Preset</b> command. Button numbers are permanent and never reused; a deleted preset's button does nothing.</div>
+  <div class='text-base mt-2'>You can also use the bridge's <b>Load Preset</b> command with a preset name (or blank for the one picked on the bridge's Preferences). Button numbers are permanent and never reused; a deleted preset's button does nothing.</div>
 </div>
 <details class='reolink-preset-guidance'>
   <summary class='font-semibold'><i class='pi pi-book mr-2' aria-hidden='true'></i>Recording modes &amp; guidance</summary>
@@ -4116,6 +4143,41 @@ def componentSetSiren(child, Boolean on, String dni = null) {
     def sourceId = c.getDataValue("sourceId") as Integer
     def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "AudioAlarmPlay", [alarm_mode: "manul", manual_switch: (on ? 1 : 0), times: 2], channel)
+}
+
+/**
+ * v1.6.9: manual recording (same call as Home Assistant's Manual record switch).
+ * SetManualRec {channel, enable, duration}; the camera stops after duration seconds
+ * (max 600). The app also sends off at that time, and updates the manualRecord attribute.
+ */
+def componentSetManualRecord(child, Boolean on, Integer seconds = null, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    int secs = Math.max(1, Math.min(MANUAL_REC_MAX_SEC, (seconds != null && seconds > 0) ? seconds : MANUAL_REC_MAX_SEC))
+    Map rec = [channel: channel, enable: on ? 1 : 0]
+    if (on) rec.duration = secs
+    def result = reolinkApiCall(sourceId, "SetManualRec", [Rec: rec], null)
+    if (result?.rspCode == 200 || result?.rspCode == 0) {
+        logNormal "Reolink ${c.displayName}: manual recording ${on ? "on for ${secs}s" : 'off'}"
+        c.receiveManualRecord(on)
+        c.updateDataValue("manualRecordUntil", on ? "${now() + secs * 1000L}" : "0")
+        if (on) runIn(secs, "manualRecordAutoOff", [overwrite: false, data: [dni: c.deviceNetworkId]])
+    } else {
+        log.warn "Reolink ${c.displayName}: manual recording not changed -- the camera rejected it or doesn't support it (Full logging shows its reply)"
+    }
+}
+
+@Field static final int MANUAL_REC_MAX_SEC = 600
+
+/** v1.6.9: ends a timed manual recording. Harmless if it already stopped or was turned off. */
+def manualRecordAutoOff(Map data) {
+    def c = data?.dni ? resolveChild(null, data.dni as String) : null
+    if (!c || c.currentValue("manualRecord") != "on") return
+    // A newer, longer Manual Record on the same device owns the stop time.
+    Long until = c.getDataValue("manualRecordUntil")?.isLong() ? c.getDataValue("manualRecordUntil") as Long : 0L
+    if (until > now() + 1500L) return
+    componentSetManualRecord(c, false, null, data.dni as String)
 }
 
 /**
