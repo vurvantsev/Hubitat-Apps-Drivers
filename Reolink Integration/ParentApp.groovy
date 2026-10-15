@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.6.9
+ * Version: 1.6.11
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -19,6 +19,27 @@
  * in-app Tips page, not duplicated here. TODO markers mark spots needing
  * exact command/param names verified against firmware (field names can
  * drift by version). Full history prior to 1.3.6 is in GitHub commit history.
+ *
+ * v1.6.11 -- Device Bridge fix: events could stop decoding after its in-memory
+ *    key was cleared (see the bridge header).
+ *  - Spotlight: on/off and auto refused over HTTP (-13, Home Hub Mini battery
+ *    cameras) are retried over the Bridge's event connection, like reolink_aio
+ *    (on/off: FloodlightManual 288; auto: read 289, write 290). The spotlight
+ *    attribute changes only once the camera accepts, follows the camera's
+ *    floodlight status push (cmd_id 291) live, is re-read 190s after "on" only
+ *    when the event connection is down, and is synced by the auto/Refresh read.
+ *    Battery cameras send on/off over Baichuan first (HTTP "on" only flashes
+ *    the light from standby; tested on a Home Hub Pro), HTTP as fallback.
+ *    The light only lasts while a battery camera is awake (~30s), so "on" is
+ *    re-sent every 20s for 180s, then turned off (same as a wired camera),
+ *    whichever path turned it on. Baichuan status 400 (camera still waking) is
+ *    retried after 1.5s, up to 3 attempts, like reolink_aio.
+ *    reolinkApiOutcome() returns rspCode with the value. Tips: Spotlight.
+ *
+ * v1.6.10 -- Device Bridge keeps per-message data in memory instead of state
+ *    (see the bridge header). Tips: Manual recording rewritten after testing
+ *    on a Home Hub Pro (events-only vs continuous, post-recording, FTP, NVR
+ *    firmware note).
  *
  * v1.6.9 -- Device Bridge page cleanup (see the bridge header): On/Off bare,
  *    Push without a number warns, blank Load Preset loads the Preferences pick,
@@ -305,7 +326,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.6.9"
+@Field static final String APP_VERSION = "1.6.11"
 
 // v1.6.5: power mode migration key; changing it re-runs migrateBatteryModes().
 @Field static final String POWER_MIGRATION_KEY = "batteryWired"
@@ -984,7 +1005,15 @@ private List tipsTopics() {
                 "One action can target several cameras at once.") + "</p>",
                 "<p>" + ("Turning auto off doesn't turn off a light that's already on; it goes off on its normal " +
                 "timer, or send <b>off</b> in the same rule. Auto on restores the mode the camera had " +
-                "before (for example a schedule), not always Night Smart Mode.") + "</p>"
+                "before (for example a schedule), not always Night Smart Mode.") + "</p>",
+                "<p>" + ("<b>Spotlight on</b> is a manual light that Reolink turns off by itself after about " +
+                "3 minutes. A battery camera only keeps its light on while it's awake, so the integration keeps it " +
+                "awake for those 3 minutes (about the same battery use as 3 minutes of live view); sending <b>off</b> " +
+                "ends it early. The <b>spotlight</b> attribute follows the camera. To keep the light on longer, " +
+                "have a rule send <b>on</b> again.") + "</p>",
+                "<p>" + ("Some cameras refuse light changes over the normal API (seen on battery cameras behind a " +
+                "<b>Home Hub Mini</b>). The integration then sends them over the event connection instead, the " +
+                "same way Home Assistant does, so the Device Bridge's event connection needs to be up.") + "</p>"
             ].join("")],
         [id: "recording", label: "Recording presets", title: "Recording presets", group: "Recording & snapshots", icon: "pi-video",
             body: [
@@ -1009,14 +1038,19 @@ private List tipsTopics() {
             ].join("")],
         [id: "manualrec", label: "Manual recording", title: "Manual recording", group: "Recording & snapshots", icon: "pi-circle-fill",
             body: [
-                "<p>" + ("Use <b>Manual Record</b> on a camera or doorbell to start recording now, for example when " +
-                "motion is detected. Turn it <b>on</b> with an optional number of seconds (1 to 600, default 600, " +
-                "the camera's limit); it stops by itself after that, or use <b>off</b> to stop sooner. The " +
-                "<b>Manual Record</b> attribute shows on/off. Recordings go wherever the camera or its Home Hub/NVR " +
-                "normally stores them.") + "</p>",
-                "<p>" + ("&#9888; <b>Battery cameras stay awake while recording</b>, so use short times there. A " +
-                "change made in the Reolink app isn't shown here. If a camera doesn't support manual recording, " +
-                "the app logs a warning and nothing changes.") + "</p>"
+                "<p>" + ("Use <b>Manual Record</b> on a camera or doorbell to record now, for example when another " +
+                "sensor sees motion. Turn it <b>on</b> with optional seconds (1 to 600, default 600); it stops by " +
+                "itself, or use <b>off</b> to stop sooner. The <b>Manual Record</b> attribute shows on/off.") + "</p>",
+                "<p>" + ("<b>Works on cameras that record on events only</b>, wired and battery (tested behind a Home " +
+                "Hub Pro: the clip saves to the hub). With <b>continuous</b> recording it's redundant, since the camera " +
+                "is already recording; that footage shows in playback once each recording file closes (often hourly). " +
+                "In playback, look at the timeline for that time, since a manual clip isn't tagged as motion or person.") + "</p>",
+                "<p>" + ("The clip runs a little longer than the seconds you set, because of the camera's " +
+                "<b>Post-recording</b> time in the Reolink app.") + "</p>",
+                "<p>" + ("&#9888; <b>Battery cameras stay awake while recording</b>, so keep it short. Their FTP upload " +
+                "only sends motion clips, so manual clips aren't uploaded by FTP. A change made in the Reolink app " +
+                "isn't shown on the attribute. On NVR firmware 3.5.1 and 3.6.x, some NVRs reject manual recording " +
+                "(a known Reolink firmware bug); the app then logs a warning and nothing changes.") + "</p>"
             ].join("")],
         [id: "snapshots", label: "Snapshot tiles", title: "Snapshot tiles on dashboards", group: "Recording & snapshots", icon: "pi-image",
             body: [
@@ -2804,6 +2838,11 @@ private void markSourceReachable(sourceId) {
 }
 
 def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null) {
+    return reolinkApiOutcome(sourceId, cmd, param, channel).value
+}
+
+/** v1.6.11: same as reolinkApiCall() but returns [value, rspCode], so a caller can act on a specific refusal. */
+private Map reolinkApiOutcome(sourceId, String cmd, Map param = [:], Integer channel = null) {
     def src = getSource(sourceId)
     def token = reolinkLogin(sourceId)
     if (!token) {
@@ -2811,7 +2850,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
         // above -- this is just the downstream consequence, not a new fact,
         // so it only needs Full-tier visibility, not its own warning.
         logFull "Reolink source ${sourceId}: no token available, aborting ${cmd}"
-        return null
+        return [value: null, rspCode: null, parseFailure: false]
     }
 
     def outcome = doReolinkApiCall(src, sourceId, cmd, token, param, channel)
@@ -2839,7 +2878,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
             "bug, see Tips page), retrying once immediately"
         outcome = doReolinkApiCall(src, sourceId, cmd, token, param, channel)
     }
-    return outcome.value
+    return outcome
 }
 
 /**
@@ -3249,6 +3288,14 @@ private void maybeCheckBatteryOnWake(child) {
 }
 
 /** Called by the bridge for sleep-status pushes (cmd_id=145). Logged only for now -- not yet wired to markAsleep()/awake. */
+/** v1.6.11: floodlight status push (cmd_id 291): the light's real on/off state, including when the camera turns it off itself. */
+def componentEventSpotlightUpdate(child, sourceId, channelId, Integer status) {
+    def c = getSourceBridge(sourceId as Integer)?.getChildDevice(childDni(sourceId, channelId as Integer))
+    if (!c || !hasSpotlight(c) || status == null) return
+    logFull "Reolink source ${sourceId} ch ${channelId}: spotlight ${status > 0 ? 'on' : 'off'} (camera push)"
+    c.receiveSpotlight(status > 0 ? "on" : "off")
+}
+
 def componentEventSleepUpdate(child, sourceId, channelId, String sleepState) {
     logFull "Reolink source ${sourceId} ch ${channelId}: event sleep push -- '${sleepState}' (not yet acted on)"
 }
@@ -4077,11 +4124,199 @@ def componentSavePreset(child, Integer presetId, String name, String dni = null)
         [PtzPreset: [channel: channel, enable: 1, id: presetId, name: name ?: "Preset${presetId}"]], null)
 }
 
+// v1.6.11: HTTP refusals that reolink_aio retries over Baichuan (the event connection).
+@Field static final List<Integer> BC_FALLBACK_CODES = [-4, -9, -12, -13, -16, -17]
+// Reolink turns a manual spotlight off by itself (about 180s on battery cameras); re-read after that.
+@Field static final int SPOTLIGHT_RECHECK_SEC = 190
+// Battery cameras: the light only stays on while the camera is awake (~30s after a Baichuan command),
+// so "on" is re-sent every SPOTLIGHT_RESEND_SEC for SPOTLIGHT_HOLD_SEC, then turned off, like a wired camera.
+@Field static final int SPOTLIGHT_HOLD_SEC = 180
+@Field static final int SPOTLIGHT_RESEND_SEC = 20
+@Field static final java.util.concurrent.ConcurrentHashMap<String, Map> SPOTLIGHT_HOLD = new java.util.concurrent.ConcurrentHashMap()
+// HTTP spotlight mode numbers -> Baichuan alarmMode (from reolink_aio).
+@Field static final Map<Integer, Integer> WHITELED_MODE_HTTP_TO_BC = [0: 0, 1: 1, 2: 2, 3: 3, (-4): 4, 4: 5, 5: 6, (-6): 7]
+@Field static final String FLOODLIGHT_MANUAL_XML =
+    '<?xml version="1.0" encoding="UTF-8" ?>\n<body>\n<FloodlightManual version="1.1">\n<channelId>%d</channelId>\n' +
+    '<status>%d</status>\n<duration>180</duration>\n</FloodlightManual>\n</body>\n'
+
+/**
+ * v1.6.11: Spotlight on/off. The spotlight attribute changes only once the camera accepts it.
+ * Battery cameras go over Baichuan first (see componentSetSpotlight); wired cameras use HTTP.
+ * A refusal in BC_FALLBACK_CODES (e.g. -13 on Home Hub Mini battery cameras) is retried over
+ * the Bridge's event connection (Baichuan FloodlightManual, 180s), like reolink_aio.
+ */
 def componentSetSpotlight(child, Boolean on, String dni = null) {
     def c = resolveChild(child, dni)
     def sourceId = c.getDataValue("sourceId") as Integer
     def channel = c.getDataValue("channel") as Integer
-    reolinkApiCall(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, state: (on ? 1 : 0)]], null)
+    SPOTLIGHT_HOLD.remove(c.deviceNetworkId)   // a new command ends any keep-awake in progress
+    // Battery cameras: Baichuan first. Over HTTP the light only flashes from standby (camera goes
+    // back to sleep within seconds); FloodlightManual carries a 180s duration. HTTP if that fails.
+    if (powerModeOf(c) == "battery" && sendSpotlightBaichuan(c, sourceId, channel, on, false)) return
+    setSpotlightHttp(c, sourceId, channel, on, true)
+}
+
+private boolean sendSpotlightBaichuan(c, Integer sourceId, Integer channel, Boolean on, boolean httpTried, int attempt = 1) {
+    String xml = String.format(FLOODLIGHT_MANUAL_XML, channel, on ? 1 : 0)
+    return getSourceBridge(sourceId)?.sendBaichuanCommand(288, channel, xml,
+        [kind: "spotlight", dni: c.deviceNetworkId, on: on, httpTried: httpTried, attempt: attempt]) == true
+}
+
+// Status 400 = battery camera still waking; reolink_aio retries after 1.5s, up to 3 attempts.
+@Field static final int BC_WAKE_ATTEMPTS = 3
+
+def retrySpotlightBaichuan(Map data) {
+    def c = resolveChild(null, data?.dni as String)
+    if (!c) return
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    if (!sendSpotlightBaichuan(c, sourceId, channel, data.on as Boolean, data.httpTried as Boolean, data.attempt as Integer)
+            && !(data.httpTried as Boolean)) {
+        setSpotlightHttp(c, sourceId, channel, data.on as Boolean, false)
+    }
+}
+
+private void setSpotlightHttp(c, Integer sourceId, Integer channel, Boolean on, boolean allowBaichuan) {
+    def out = reolinkApiOutcome(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, state: (on ? 1 : 0)]], null)
+    if (out.value != null) {
+        spotlightConfirmed(c, on)
+        return
+    }
+    if (allowBaichuan && out.rspCode in BC_FALLBACK_CODES) {
+        if (sendSpotlightBaichuan(c, sourceId, channel, on, true)) {
+            logFull "Reolink ${c.displayName}: spotlight refused over HTTP (rspCode ${out.rspCode}), sent over the event connection"
+            return
+        }
+        log.warn "Reolink ${c.displayName}: spotlight not changed -- the camera refused it over HTTP and the event connection isn't up to retry"
+        return
+    }
+    log.warn "Reolink ${c.displayName}: spotlight not changed -- the camera rejected the request (Full logging shows its reply)"
+}
+
+private void spotlightConfirmed(c, Boolean on) {
+    c.receiveSpotlight(on ? "on" : "off")
+    if (!on) return
+    def bridge = getSourceBridge(c.getDataValue("sourceId") as Integer)
+    if (bridge?.currentValue("connectionStatus") == "connected") {
+        // Battery cameras: keep awake for the full 3 minutes, whichever path turned the light on.
+        if (powerModeOf(c) == "battery" && !SPOTLIGHT_HOLD.containsKey(c.deviceNetworkId)) startSpotlightHold(c)
+        // The floodlight push (cmd_id 291) reports the light going off; a re-read would wake a battery camera.
+        return
+    }
+    runIn(SPOTLIGHT_RECHECK_SEC, "recheckSpotlight", [data: [dni: c.deviceNetworkId], overwrite: false])
+}
+
+/** Battery cameras: keeps the camera awake (and the light on) for SPOTLIGHT_HOLD_SEC by re-sending "on". */
+private void startSpotlightHold(c) {
+    String dni = c.deviceNetworkId
+    long gen = now()
+    SPOTLIGHT_HOLD.put(dni, [until: gen + SPOTLIGHT_HOLD_SEC * 1000L, gen: gen])
+    runIn(SPOTLIGHT_RESEND_SEC, "spotlightKeepAwake", [data: [dni: dni, gen: gen], overwrite: false])
+}
+
+def spotlightKeepAwake(Map data) {
+    String dni = data?.dni as String
+    Map hold = SPOTLIGHT_HOLD.get(dni)
+    if (!hold || hold.gen != (data.gen as Long)) return   // cancelled, or replaced by a newer command
+    def c = resolveChild(null, dni)
+    if (!c || c.currentValue("spotlight") != "on") {        // turned off another way (Reolink app, camera)
+        SPOTLIGHT_HOLD.remove(dni)
+        return
+    }
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    long left = (hold.until as Long) - now()
+    def bridge = getSourceBridge(sourceId)
+    if (left <= 1000L) {
+        SPOTLIGHT_HOLD.remove(dni)
+        logFull "Reolink ${c.displayName}: spotlight hold done (${SPOTLIGHT_HOLD_SEC}s), turning it off"
+        bridge?.sendBaichuanCommand(288, channel, String.format(FLOODLIGHT_MANUAL_XML, channel, 0),
+            [kind: "spotlight", dni: dni, on: false, httpTried: true])
+        return
+    }
+    bridge?.sendBaichuanCommand(288, channel, String.format(FLOODLIGHT_MANUAL_XML, channel, 1),
+        [kind: "spotlight", dni: dni, on: true, httpTried: true, hold: true])
+    logFull "Reolink ${c.displayName}: spotlight keep-awake resend (${(left / 1000L) as Integer}s left)"
+    int next = Math.min(SPOTLIGHT_RESEND_SEC, Math.max(1, (left / 1000L) as Integer))
+    runIn(next, "spotlightKeepAwake", [data: [dni: dni, gen: hold.gen], overwrite: false])
+}
+
+/** Re-reads the light after Reolink's own manual-on timer, so the attribute doesn't stay "on". */
+def recheckSpotlight(Map data) {
+    def c = resolveChild(null, data?.dni as String)
+    if (!c) return
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    def current = reolinkApiCall(sourceId, "GetWhiteLed", [:], channel)
+    String key = (current instanceof Map) ? current.keySet().find { it.toString().equalsIgnoreCase("WhiteLed") } : null
+    Integer st = (key && current[key] instanceof Map) ? toIntOrNull(current[key].state) : null
+    if (st != null) c.receiveSpotlight(st > 0 ? "on" : "off")
+}
+
+/**
+ * v1.6.11: replies to settings sent over a Bridge's event connection (status null = no reply).
+ * spotlightAutoRead/Write: read the light settings (289), change the mode, write them back (290).
+ */
+def componentBaichuanReply(bridge, Map ctx, Integer status, String body) {
+    def c = resolveChild(null, ctx?.dni as String)
+    if (!c) return
+    String why = status == null ? "no reply" : "status ${status}"
+    switch (ctx.kind) {
+        case "spotlight":
+            if (ctx.hold) {
+                if (status != 200) {
+                    logFull "Reolink ${c.displayName}: spotlight keep-awake resend not accepted (${why}), resending over HTTP"
+                    reolinkApiOutcome(c.getDataValue("sourceId") as Integer, "SetWhiteLed",
+                        [WhiteLed: [channel: c.getDataValue("channel") as Integer, state: 1]], null)
+                }
+                break
+            }
+            int attempt = (ctx.attempt ?: 1) as Integer
+            if (status == 200) {
+                logNormal "Reolink ${c.displayName}: spotlight ${ctx.on ? 'on' : 'off'} (sent over the event connection)"
+                spotlightConfirmed(c, ctx.on as Boolean)
+            } else if (status == 400 && attempt < BC_WAKE_ATTEMPTS) {
+                logFull "Reolink ${c.displayName}: camera still waking (status 400), retrying in 1.5s (attempt ${attempt + 1} of ${BC_WAKE_ATTEMPTS})"
+                runInMillis(1500, "retrySpotlightBaichuan",
+                    [data: [dni: c.deviceNetworkId, on: ctx.on, httpTried: ctx.httpTried ?: false, attempt: attempt + 1], overwrite: false])
+            } else if (!ctx.httpTried) {
+                logFull "Reolink ${c.displayName}: spotlight over the event connection failed (${why}), trying HTTP"
+                setSpotlightHttp(c, c.getDataValue("sourceId") as Integer, c.getDataValue("channel") as Integer, ctx.on as Boolean, false)
+            } else {
+                log.warn "Reolink ${c.displayName}: spotlight not changed -- the camera refused it over the event connection too (${why})"
+            }
+            break
+        case "spotlightAutoRead":
+            if (status != 200 || !body?.contains("<FloodlightTask")) {
+                logFull "Reolink ${c.displayName}: light settings read over the event connection failed (${why}) -- raw: ${body?.take(300)}"
+                log.warn "Reolink ${c.displayName}: spotlight auto not changed -- the camera didn't return its light settings (${why})"
+                break
+            }
+            Integer target = ctx.target as Integer
+            String bc = (WHITELED_MODE_HTTP_TO_BC[target] ?: target).toString()
+            int start = body.indexOf("<FloodlightTask")
+            int end = body.indexOf("</FloodlightTask>", start)
+            if (end < 0) end = body.length()
+            String task = body.substring(start, end)
+                .replaceFirst(/<alarmMode>[^<]*<\/alarmMode>/, "<alarmMode>${bc}</alarmMode>")
+                .replaceFirst(/<enable>[^<]*<\/enable>/, "<enable>${bc}</enable>")
+            String xml = body.substring(0, start) + task + body.substring(end)
+            if (bridge?.sendBaichuanCommand(290, c.getDataValue("channel") as Integer, xml,
+                    [kind: "spotlightAutoWrite", dni: c.deviceNetworkId, target: target]) != true) {
+                log.warn "Reolink ${c.displayName}: spotlight auto not changed -- the event connection isn't up"
+            }
+            break
+        case "spotlightAutoWrite":
+            if (status == 200) {
+                logNormal "Reolink ${c.displayName}: spotlight auto set to ${spotlightModeName(ctx.target as Integer)} (sent over the event connection)"
+                c.receiveSpotlightAuto(ctx.target as Integer)
+            } else {
+                log.warn "Reolink ${c.displayName}: spotlight auto not changed -- the camera refused it over the event connection too (${why})"
+            }
+            break
+        default:
+            break
+    }
 }
 
 /**
@@ -4095,6 +4330,8 @@ def componentSetSpotlightAuto(child, Boolean on, String dni = null) {
     def current = reolinkApiCall(sourceId, "GetWhiteLed", [:], channel)
     String key = (current instanceof Map) ? current.keySet().find { it.toString().equalsIgnoreCase("WhiteLed") } : null
     Integer mode = (key && current[key] instanceof Map) ? toIntOrNull(current[key].mode) : null
+    Integer lightState = (key && current[key] instanceof Map) ? toIntOrNull(current[key].state) : null
+    if (lightState != null) c.receiveSpotlight(lightState > 0 ? "on" : "off")
     if (mode == null) {
         if (on == null) {
             logFull "Reolink ${c.displayName}: no spotlight mode returned -- raw: ${current?.toString()?.take(300)}"
@@ -4111,10 +4348,17 @@ def componentSetSpotlightAuto(child, Boolean on, String dni = null) {
     if (mode > 0) c.receiveSpotlightAuto(mode)
     Integer saved = toIntOrNull(c.getDataValue("spotlightAutoMode"))
     int target = on ? ((saved != null && saved > 0) ? saved : 1) : 0
-    def result = reolinkApiCall(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, mode: target]], null)
-    if (result?.rspCode == 200 || result?.rspCode == 0) {
+    def out = reolinkApiOutcome(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, mode: target]], null)
+    if (out.value != null) {
         logNormal "Reolink ${c.displayName}: spotlight auto set to ${spotlightModeName(target)}"
         c.receiveSpotlightAuto(target)
+    } else if (out.rspCode in BC_FALLBACK_CODES) {
+        // v1.6.11: read-modify-write over the event connection; finished in componentBaichuanReply().
+        if (getSourceBridge(sourceId)?.sendBaichuanCommand(289, channel, "", [kind: "spotlightAutoRead", dni: c.deviceNetworkId, target: target]) == true) {
+            logFull "Reolink ${c.displayName}: spotlight auto refused over HTTP (rspCode ${out.rspCode}), retrying over the event connection"
+        } else {
+            log.warn "Reolink ${c.displayName}: spotlight auto not changed -- the camera refused it over HTTP and the event connection isn't up to retry"
+        }
     } else {
         log.warn "Reolink ${c.displayName}: spotlight auto not changed -- the camera rejected the request (Full logging shows its reply)"
     }
