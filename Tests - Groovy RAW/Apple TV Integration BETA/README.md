@@ -1,0 +1,82 @@
+# Apple TV Now Playing (Beta) 1.2.0.5
+
+Lets Hubitat see what your Apple TV is doing: **which app** is playing (Netflix, Plex, YouTube...) and whether it's **playing or paused**. Some apps also share the title.
+
+This is an **experimental beta**. It's separate from Apple TV Integration and doesn't change it. There's no timeline, and it may or may not end up in the main integration.
+
+**How is this different from Hubitat's built-in AirPlay integration?** The built-in one shows play state and a title. This beta adds **which app is playing** and whether the TV is **awake or asleep**, as separate attributes. That lets rules tell Netflix from Plex from YouTube. Both can run side by side.
+
+## Install
+
+**With Hubitat Package Manager (recommended, makes updates one click):**
+
+1. Open **HPM → Install → From a URL**
+2. Paste this link and follow the prompts:
+   `https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Tests%20-%20Groovy%20RAW/Apple%20TV%20Integration%20BETA/packagemanifest.json`
+
+It won't show up in HPM's search. That's on purpose, since it's a beta.
+
+**Or by hand (2 links):**
+
+1. **Apps Code → New App → Import**, paste this link, then **Save**:
+   `https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Tests%20-%20Groovy%20RAW/Apple%20TV%20Integration%20BETA/AppleTVNowPlayingApp.groovy`
+2. **Drivers Code → New Driver → Import**, paste this link, then **Save**:
+   `https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Tests%20-%20Groovy%20RAW/Apple%20TV%20Integration%20BETA/AppleTVNowPlayingDriver.groovy`
+
+## Set up
+
+1. Open **Integrations** in the left menu and add **Apple TV Now Playing (Beta)**
+2. Your Apple TVs show up under **Found on your network**. If one is missing, wake it with its remote and tap **Refresh**, or use **Add by IP**.
+3. Tap **Pair**. A 4-digit PIN appears on the TV. Type it in and tap **Submit PIN**.
+4. Tap **Done**. The device connects on its own and starts reporting.
+
+Pairing adds "Hubitat" to the Apple TV's list of remotes and devices. This pairing is separate from the Apple TV Integration's.
+
+## What the device shows
+
+| Attribute | Values |
+|---|---|
+| `currentApp` | Netflix, Plex, YouTube... or `none` |
+| `currentAppId` | The app's ID, e.g. `com.plexapp.plex` (most reliable for rules) |
+| `playbackState` | `playing`, `paused`, `stopped`, `idle` |
+| `title`, `artist`, `duration` | Only when the app shares them (Netflix doesn't, Plex and YouTube do). `none` / 0 otherwise |
+| `tvState` | `awake` or `asleep` |
+| `connection` | `connected`, `connecting`, `reconnecting`, `offline`, `disconnected` |
+
+The device also creates two hidden helper devices (event and data channels). Leave them alone. Removing the TV in the app removes them too.
+
+## Writing rules
+
+Use **app and playback state together**, for example:
+
+- **Movie night:** `currentApp` is Plex **and** `playbackState` is playing → dim the lights.
+- **Movie over:** `playbackState` changes to paused or stopped → lights back up.
+
+Good to know:
+
+- **Leaving an app pauses it**, and **sleeping the TV pauses it**. "Paused" covers both.
+- **The home screen shows the last app as paused**, not "none".
+- **YouTube ads** show up as short items with the video's title.
+
+## Known issues
+
+- **Pausing inside Plex may still show `playing`.** Plex doesn't always tell the Apple TV it paused. Leaving Plex or sleeping the TV shows `paused` correctly.
+- **The banner at the top of the app page** (counts like "1 connected") only updates when the page reloads. The Apple TV cards update live.
+- **Not tested yet:** what happens when an Apple TV gets a new IP address, and a hub reboot. Both should recover on their own. Please tell me if they don't.
+
+## What I'd like to hear back
+
+- Your hub model (C-5, C-7, C-8, C-8 Pro), Apple TV model and tvOS version
+- Which apps worked, and which reported something odd
+- Whether it reconnects on its own after the TV sleeps overnight, and after a hub reboot
+- Anything that looks off. Set **Log level** to **Full** in the app, reproduce it, and send the logs (Full turns itself off after 30 minutes)
+
+## Updating
+
+- **HPM:** **Update**, like any other package.
+- **By hand:** open each file in Apps Code / Drivers Code, click **Import**, paste the same link, and **Save**.
+- **Installed by hand and want HPM to take over?** Use **HPM → Match Up**. It links what you already have to the package.
+
+## Removing
+
+Open the app and tap **Remove** on the TV, or remove the whole app. To clear it on the Apple TV too, remove "Hubitat" from **Settings → Remotes and Devices** (or AirPlay and HomeKit, depending on tvOS).
