@@ -6,7 +6,7 @@
         {
             "name": "Battery Monitor 2.0",
             "category": "Utility",
-            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps/refs/heads/main/Battery%20Monitor%202.0/packageManifest.json",
+            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Battery%20Monitor%202.0/packageManifest.json",
             "description": "Advanced Hubitat battery monitoring with analytics, trends, and replacement tracking. Auto-discover devices, monitor battery health, track replacements, and receive daily reports.",
             "descriptive": "",
             "tags": [
@@ -21,20 +21,18 @@
             "description": "Custom Hubitat driver for SmartThings Zigbee motion sensors with local processing and battery reporting.",
             "descriptive": "",
             "tags": [
-                "zigbee",
-                "motion",
-                "sensor",
-                "smartthings"
+                "Zigbee",
+                "Sensors"
             ]
         },
         {
-            "name": "Pentair Intellicenter Controller",
-            "category": "Utility",
+            "name": "Pentair IntelliCenter Controller",
+            "category": "Integrations",
             "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Pentair%20Intellicenter%20Control/packagemanifest.json",
-            "description": "Pentair Intellicenter Controller ",
+            "description": "Local control of a Pentair IntelliCenter pool controller: pool and spa, heat, pumps, circuits, sensors and salt cell, with an equipment picker. No cloud.",
             "descriptive": "",
             "tags": [
-                "Pools & Spas"
+                "Pool & Spa"
             ]
         },
         {
@@ -85,8 +83,29 @@
                 "Audio & Video",
                 "Entertainment"
             ]
+        },
+        {
+            "name": "Apple TV Integration",
+            "category": "Integrations",
+            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Apple%20TV%20Integration/packagemanifest.json",
+            "description": "Local control of Apple TVs, no bridge or cloud. Finds them on your network, pairs with the on-screen PIN, and creates one device each: on/off from scenes and rules, play/pause and playback state, Siri Remote buttons, volume, and app launching.",
+            "descriptive": "",
+            "tags": [
+                "Audio & Video",
+                "Entertainment",
+                "Remotes & Buttons"
+            ]
+        },
+        {
+            "name": "Leviton Smart Load Center",
+            "category": "Integrations",
+            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Leviton%20Smart%20Load%20Center/packagemanifest.json",
+            "description": "Leviton LWHEM and LDATA smart panels: per-breaker and CT clamp power, current, voltage and energy, with optional remote trip and reset.",
+            "descriptive": "",
+            "tags": [
+                "Energy Monitoring",
+                "Monitoring"
+            ]
         }
     ]
 }
-
-
