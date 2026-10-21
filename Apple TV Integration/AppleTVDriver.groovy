@@ -12,7 +12,14 @@
       and are loaded into memory only, so they never show in State Variables.
      -Reconnects with backoff (5s to 5 min). "offline" only after 4 failed attempts, then
       "back online" logs at every level. Follows IP changes through the app's Bonjour list.
-     -Health check every 5 min (FetchAttentionState, 20s timeout) catches half-open sockets.
+     -Health check every 5 min (FetchAttentionState, 20s timeout) catches half-open sockets, and a connect
+      stuck over 60s (a timeout lost to an interrupted thread or a firmware boot), logged as a warning.
+     -socketStatus is handled on a scheduled thread (the hub may interrupt the socket's own thread), and
+      retries and the connect timeout are scheduled before anything else that could fail.
+     -The app runs healthCheck on every TV a minute after a hub restart, so a stalled boot connect or a lost
+      status update is fixed in about a minute instead of up to 5.
+     -connection = "connected" is posted after the session is fully set up, and re-posted on every answered
+      health check, so a status update lost at boot can't leave it stuck on "connecting".
       on/off with no reply in 5s reconnects and retries once. Initialize reconnects after reboots.
      -Playback: play/pause/next/previous/skip via _mcc (MediaControl), buttons via HID press+release.
       transportStatus comes from the allowed-controls flags (_iMC _mcF or MediaControlStatus
@@ -56,7 +63,7 @@
 import groovy.transform.Field
 import java.security.MessageDigest
 
-def version() { return "1.1.4" }
+def version() { return "1.1.7" }
 
 metadata {
     definition(name: "Apple TV", namespace: "jdthomas24", author: "Jason Thomas", importUrl: "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Apple%20TV%20Integration/AppleTVDriver.groovy") {
@@ -581,6 +588,8 @@ def connect() {
     m.rx = ""
     m.mode = "session"
     m.stage = "OPEN"
+    m.connectAt = now()
+    runIn(15, "connectTimeout")
     m.ss = [:]
     m.waiting = [:]
     sendIfChanged("connection", (m.failCount ?: 0) ? (device.currentValue("connection") == "offline" ? "offline" : "reconnecting") : "connecting")
@@ -588,7 +597,6 @@ def connect() {
     m.stage = "PV2"
     send(pvStart(m.ss as Map))
     logF("connecting to ${state.ip}:${state.port}")
-    runIn(15, "connectTimeout")
 }
 
 def connectTimeout() {
@@ -604,14 +612,14 @@ private void scheduleRetry(String reason) {
     Map m = mem()
     int n = ((m.failCount ?: 0) as int) + 1
     m.failCount = n
+    int delay = RETRY_SEC[Math.min(n - 1, RETRY_SEC.size() - 1)] as int
+    runIn(delay, "connect")
     if (n == OFFLINE_AFTER) {
         sendIfChanged("connection", "offline")
         logE("offline (${reason}). Retrying every 5 minutes. Check that the Apple TV has power and is on the network.")
     } else if (n < OFFLINE_AFTER) sendIfChanged("connection", "reconnecting")
     if (n >= 2) refreshAddress()
-    int delay = RETRY_SEC[Math.min(n - 1, RETRY_SEC.size() - 1)] as int
     logF("retry ${n} in ${delay}s (${reason})")
-    runIn(delay, "connect")
 }
 
 private void forceReconnect() {
@@ -637,7 +645,15 @@ def healthCheck() {
             m.probeAt = now()
             request("FetchAttentionState", [:], "health")
             runIn(20, "healthTimeout")
-        } else if (!(m.stage in CONNECTING)) connect()
+        } else if (m.stage in CONNECTING) {
+            if (!m.connectAt || now() - (m.connectAt as long) > 60000) {
+                String at = m.stage
+                logE("stuck connecting for over a minute (at ${at}), retrying")
+                closeSocket()
+                m.stage = "CLOSED"
+                scheduleRetry("stuck at ${at}")
+            }
+        } else connect()
     } catch (e) {
         logE("health check failed: ${e.message}")
     }
@@ -652,7 +668,10 @@ def healthTimeout() {
     }
 }
 
-def socketStatus(String s) {
+def socketStatus(String s) { runInMillis(50, "socketStatusLater", [data: [s: s], overwrite: false]) }
+
+def socketStatusLater(Map d) {
+    String s = d?.s as String
     Map m = mem()
     logF("socket status: ${s}")
     String l = s?.toLowerCase() ?: ""
@@ -775,7 +794,7 @@ private void handleSessionFrame(Map m, byte[] header, byte[] payload) {
                 break
             case "attention":
             case "health":
-                if (label == "health") { m.remove("probeAt"); unschedule("healthTimeout") }
+                if (label == "health") { m.remove("probeAt"); unschedule("healthTimeout"); markConnected() }
                 if (msg._c instanceof Map && msg._c.state != null) setPower(msg._c.state as int, label == "health" ? "check" : "query")
                 break
             case "apps":
@@ -809,15 +828,22 @@ private void finishSetup(Map m) {
     unschedule("connectTimeout")
     boolean wasOffline = device.currentValue("connection") == "offline"
     m.failCount = 0
-    sendIfChanged("connection", "connected")
-    state.lastConnected = fmtNow()
-    if (wasOffline) slog("info", "back online")
-    else logN("connected")
     request("FetchAttentionState", [:], "attention")
     request("FetchLaunchableApplicationsEvent", [:], "apps")
     List q = (m.after ?: []) as List
     m.after = []
     q.each { runAction(it as String) }
+    markConnected()
+    state.lastConnected = fmtNow()
+    if (wasOffline) slog("info", "back online")
+    else logN("connected")
+}
+
+// Also called on each answered health check; if the first update was lost, this corrects it.
+private void markConnected() {
+    if (device.currentValue("connection") == "connected") return
+    if (mem().readyAt && now() - (mem().readyAt as long) > 10000) logE("connection status was out of date, corrected to connected")
+    sendIfChanged("connection", "connected")
 }
 
 private void request(String id, Map content, String label) {

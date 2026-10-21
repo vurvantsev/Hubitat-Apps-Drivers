@@ -1,4 +1,4 @@
-# Apple TV Now Playing (Beta) 1.2.0.7
+# Apple TV Now Playing (Beta) 1.2.0.10
 
 Lets Hubitat see what your Apple TV is doing: **which app** is playing (Netflix, Plex, YouTube...) and whether it's **playing or paused**. Some apps also share the title.
 
@@ -43,9 +43,7 @@ Pairing adds "Hubitat" to the Apple TV's list of remotes and devices. This pairi
 | `tvState` | `awake` or `asleep` |
 | `connection` | `connected`, `connecting`, `reconnecting`, `offline`, `disconnected` |
 
-The device also creates a hidden helper device, "(link)", that holds the Now Playing connection. Leave it alone. Removing the TV in the app removes it too.
-
-**Helpers setting (testing in 1.2.0.7):** **One** (the default) uses a single helper per Apple TV. **Two** adds a second one, "(setup link)", the way earlier betas worked. If an Apple TV keeps dropping or going offline on One, set **Two** in the app and tell me. Changing it reconnects every Apple TV.
+The device also creates two hidden helper devices, "(link)" and "(setup link)", that hold its extra connections. Each device on the hub can hold only one connection, and the Apple TV needs all three open at once. Leave them alone. Removing the TV in the app removes them too.
 
 ## Writing rules
 
@@ -56,10 +54,12 @@ Use **app and playback state together**, for example:
 
 Good to know:
 
-- **Leaving an app pauses it.** The home screen shows the last app as paused, not "none".
-- **Sleeping the TV clears it:** `currentApp` goes to `none`, `playbackState` to `stopped`, and title, artist and duration clear. Waking it shows the last app again, paused.
+- **Leaving an app shows it as paused, not "none".** The Apple TV doesn't announce when you're back on the home screen. It still treats the last app as "now playing" (press Play on the remote and it resumes). So after leaving Plex for the home screen, the device shows Plex, `paused`. For rules, check `playbackState` is `playing`, not just `currentApp`.
+- **Sleeping the TV clears it:** `currentApp` goes to `none`, `playbackState` to `stopped`, and title, artist and duration clear.
+- **After waking, nothing shows until an app plays:** `currentApp` stays `none` (`idle`) on the home screen, even if the Apple TV still has a paused app in the background.
 - **`currentApp` is the last app that actually played.** When an app closes or the TV turns off, the Apple TV sometimes falls back to an older paused app. The device ignores that and keeps showing the app you were watching (as `stopped` if it closed completely). Another app only takes over once it starts playing.
 - **YouTube ads** show up as short items with the video's title.
+- **Prime Video previews** (the trailers that autoplay while browsing) show no title. Full episodes and movies do.
 
 ## Known issues
 
@@ -73,7 +73,6 @@ Good to know:
 - Your hub model (C-5, C-7, C-8, C-8 Pro), Apple TV model and tvOS version
 - Which apps worked, and which reported something odd
 - Whether it reconnects on its own after the TV sleeps overnight, and after a hub reboot
-- With Helpers on **One**: whether it stays connected for a day or more
 - Anything that looks off. Set **Log level** to **Full** in the app, reproduce it, and send the logs (Full turns itself off after 30 minutes)
 
 ## Updating
