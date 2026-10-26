@@ -2,7 +2,7 @@
 
 Native, local control of Apple TVs from Hubitat Elevation. Turn your Apple TVs on and off, control playback, press remote buttons and launch apps from scenes, rules and dashboards, with live power and playback state. No Homebridge, no Home Assistant, no Raspberry Pi, no Python.
 
-> **Status: v1.2.0.** Install through HPM: search for **Apple TV Integration**, or use the manifest URL below.
+> **Status: v1.2.2.** Install through HPM: search for **Apple TV Integration**, or use the manifest URL below.
 
 **Forum thread:** [Apple TV Integration on the Hubitat Community](https://community.hubitat.com/t/166801)
 
@@ -70,10 +70,10 @@ After pairing, the Apple TV lists **Hubitat** under Settings → Remotes and Dev
 | `power` | `asleep`, `screensaver` or `awake` |
 | `connection` | `connected`, `connecting`, `reconnecting`, `offline` or `not paired` |
 | `refresh` | Re-reads the power state and the installed apps |
-| `play`, `pause`, `stop`, `playPause` | Playback. The Apple TV has no real stop, so `stop` pauses |
-| `nextTrack`, `previousTrack`, `skipForward`, `skipBackward` | Next and previous, skip 10 seconds |
-| `volumeUp`, `volumeDown` | Volume, with an optional number of steps |
-| `remoteButton` | `up`, `down`, `left`, `right`, `select`, `back`, `homeScreen`, `tvButton`, `playPause`, with an optional number of presses |
+| `play`, `pause`, `stop` | Playback. Play always plays and Pause always pauses. The Apple TV has no real stop, so `stop` pauses |
+| `playback` | `playPause` (toggles), `nextTrack`, `previousTrack`, `skipForward`, `skipBackward` (10 seconds) |
+| `remoteButton` | `up`, `down`, `left`, `right`, `select`, `back`, `homeScreen`, `tvButton`, `controlCenter`, `closeApp`, `volumeUp`, `volumeDown`, with an optional number of presses (volume up to 20) |
+| `sendText` | Types into a search box that's open on the TV. `replace` clears it first, `add` adds to it |
 | `launchApp` | Opens an app picked from the list, or typed under Other (name, bundle ID or app link) |
 | `transportStatus` | `playing`, `paused` or `stopped`, including changes made with the Siri Remote |
 | `nowPlaying` | The title, for apps that share it, otherwise `none`. Arrives when playback starts |
@@ -81,8 +81,11 @@ After pairing, the Apple TV lists **Hubitat** under Settings → Remotes and Dev
 **State Variables** show **Installed Apps** (names you can type under Other) and **Last Launch From Hubitat**, for example `Netflix (launched)` or `Hulu (failed: not installed)`. It only covers launches sent from Hubitat. For the app actually playing, use Track current app below.
 
 **Notes**
+- The device page groups the playback buttons under **Playback** and volume under **Remote Button**. Rules written with the older command names (Next Track, Volume Up and so on) keep working.
 - `homeScreen` holds Back, like the Siri Remote, so it always goes to the Home Screen. Use it in rules when you just want to go home.
 - `tvButton` presses the Siri Remote's TV button. One press follows each Apple TV's TV Button setting (Settings → Remotes and Devices → TV Button), so it may open the Apple TV app instead of the Home Screen. Two presses (times 2) open the App Switcher.
+- `controlCenter` holds the TV button, which opens Control Center.
+- `closeApp` closes the app on screen and returns to the Home Screen. It needs **Track current app** turned on.
 - App links open only in apps that support them, and the Apple TV asks you to confirm. YouTube web links are converted to the YouTube app's own link automatically.
 
 ### Track current app
@@ -100,7 +103,6 @@ Off by default. Turn on **Track current app** under Quick Settings in the app, a
 - **For rules, check `playbackState` is `playing`, not just `currentApp`.** The Apple TV never announces the Home Screen, so leaving an app shows it as paused.
 - When the Apple TV sleeps it clears to `none` / `stopped`. After waking or reconnecting it stays `none` until an app actually plays.
 - It adds three hidden helper devices per Apple TV, named after the TV (`Living Room control`, `Living Room event`, `Living Room data`). They hold the extra connections and stay out of dashboards and rules. Turning the setting off removes them.
-- Running the Apple TV Now Playing (Beta)? Remove it before turning this on.
 
 **Turn the TV on too:** on the Apple TV, enable **Settings → Remotes and Devices → Control TVs and Receivers** (HDMI-CEC). Waking the Apple TV then wakes the TV and switches its input.
 
@@ -119,6 +121,7 @@ All logs for the integration show under the app, labeled by device. Set **Log le
 - **"Back off" error while pairing:** too many attempts in a row. Wait a minute and try again.
 - **Wrong name in the Found list:** the name comes from the Apple TV (Settings → General → About → Name). Your Hubitat device name is separate and never overwritten.
 - **Apple TV 4K (1st gen) on Ethernet goes offline while asleep:** some of these units drop off the network when they sleep. Wi-Fi, an IR blaster or HDMI-CEC from the TV are workarounds for waking it.
+- **Changed the Apple TV's IP:** it finds the Apple TV again by the ID saved at pairing. If it doesn't, tap **Edit address** on its card in the app, enter the new IP and tap **Save**. No new pairing needed.
 - **Device shows offline:** check that the Apple TV has power and network. It retries on its own every 5 minutes. If it says to pair again, the pairing was removed on the Apple TV side.
 
 ## Credits
