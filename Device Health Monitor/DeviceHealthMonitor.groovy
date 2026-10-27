@@ -1,12 +1,17 @@
 /**
  * Device Health Monitor
- * Version: 1.7.4
+ * Version: 1.8.0
  *
  * Learns each device's normal check-in pattern and flags devices that go quiet, across
  * Zigbee, Z-Wave, Matter, Hub Mesh, LAN, Virtual and Hub Variable. Verifies Poor/Offline
  * devices by state events, refresh/ping, the hub's Z-Wave and Zigbee radio data, or Hue Bridge /
  * Konnected Panel round-trips. Optional OAuth web portal.
  *
+ * v1.8.0 -- Radio seen, no events. A Zigbee or Z-Wave device the hub radio still hears, but whose events
+ *    stopped for the Offline threshold, is Poor at best. Applies only to regular reporters (event pace learned
+ *    from events alone, seeded from recent event history); naturally quiet devices never trip it.
+ * v1.7.5 -- Info logging toggle (on by default) beside Debug logging. Off silences scan and verification
+ *    info lines; warnings and errors always log.
  * v1.7.4 -- Web portal light mode: Portal theme setting (Dark default, Light, Follow device) plus a
  *    theme button on the portal that each browser remembers. Light rules live under body.dhm-light.
  * v1.7.3 -- Dark mode: in-hub pages use the hub's theme colors (var() tokens with fallbacks, tinted
@@ -71,7 +76,7 @@ definition(
     oauth: true
 )
 
-@Field static final String APP_VERSION = "1.7.4"
+@Field static final String APP_VERSION = "1.8.0"
 @Field static final String COMMUNITY_URL = "https://community.hubitat.com/t/release-device-health-monitor/163229"
 @Field static final String COFFEE_URL = "https://paypal.me/jdthomas24?locale.x=en_US&country.x=US"
 @Field static final String DEFAULT_TIP_TOPIC = "best"
@@ -168,6 +173,7 @@ def initialize() {
     if (state.fairHold            == null) state.fairHold            = [:]
     if (state.deadBattery         == null) state.deadBattery         = [:]
     if (state.driverOffline       == null) state.driverOffline       = [:]
+    if (state.radioOnly           == null) state.radioOnly           = [:]
 
     if (!state.capabilitiesResetDone) {
         state.deviceCapabilities  = [:]
@@ -188,7 +194,7 @@ def initialize() {
             }
         }
         state.samplesRoundedDone = true
-        if (roundedAny) log.info "Device Health Monitor: one-time cleanup — rounded bloated sample precision in state.history"
+        if (roundedAny) logInfo "Device Health Monitor: one-time cleanup — rounded bloated sample precision in state.history"
     }
     if (state.deviceLocations == null) state.deviceLocations = [:]
 
@@ -217,9 +223,12 @@ def initialize() {
 }
 
 def debugEnabled() { return settings?.debugMode == true }
+// Unset on upgrade counts as on
+def infoEnabled()  { return settings?.infoMode != false }
+def logInfo(msg)   { if (infoEnabled()) log.info msg }
 
 def disableDebugLogging() {
-    log.info "Device Health Monitor: auto-disabling debug logging after 30 minutes"
+    logInfo "Device Health Monitor: auto-disabling debug logging after 30 minutes"
     app.updateSetting("debugMode", [value: false, type: "bool"])
 }
 
@@ -716,7 +725,7 @@ def zwProbeReadback() {
         def names = missed.collect { m -> m.name + " " + Math.min(m.misses as int, ZW_MISS_LIMIT) + "/" + ZW_MISS_LIMIT }.join(", ")
         log.warn(msg + ", ${missed.size()} no answer (${names})")
     } else {
-        log.info(msg)
+        logInfo(msg)
     }
 }
 
@@ -1374,9 +1383,9 @@ def runDeepVerificationScan() {
 
     def targets = devList.findAll { getPingStatus(it.id) in ["declared", "unknown"] || zwNeedsRadioCheck(it) }
 
-    log.info "Device Health Monitor: deep verification scan starting — ${targets.size()} device(s) to verify"
+    logInfo "Device Health Monitor: deep verification scan starting — ${targets.size()} device(s) to verify"
     if (targets.size() == 0) {
-        log.info "Device Health Monitor: deep verification scan — nothing to verify (all devices already Verified or Unverifiable)"
+        logInfo "Device Health Monitor: deep verification scan — nothing to verify (all devices already Verified or Unverifiable)"
         return
     }
 
@@ -1384,7 +1393,7 @@ def runDeepVerificationScan() {
     def batchSize    = totalDevices > 200 ? 25 : 40
     def groups       = targets.collate(batchSize)
     def totalGroups  = groups.size()
-    log.info "Device Health Monitor: deep scan — ${totalGroups} batch(es) of ${batchSize}"
+    logInfo "Device Health Monitor: deep scan — ${totalGroups} batch(es) of ${batchSize}"
 
     state.deepScanQueue     = groups.collect { group -> group.collect { it.id } }
     state.deepScanTotal     = totalGroups
@@ -1407,7 +1416,7 @@ def processDeepScanGroup(data = null) {
     def groupNum    = state.deepScanCurrent
     def totalGroups = state.deepScanTotal ?: 0
     def allDevs     = getAllMonitoredDevices()
-    log.info "Device Health Monitor: deep scan batch ${groupNum}/${totalGroups} — pinging ${deviceIds.size()} device(s)"
+    logInfo "Device Health Monitor: deep scan batch ${groupNum}/${totalGroups} — pinging ${deviceIds.size()} device(s)"
 
     if (!queue.isEmpty()) {
         runIn(2, "processDeepScanGroup", [overwrite: false])
@@ -1496,10 +1505,10 @@ def finalizeDeepScan(data = null) {
     app.updateSetting("enableDeepScan", [value: false, type: "bool"])
     unschedule("runDeepVerificationScan")
 
-    log.info "Device Health Monitor: deep verification scan complete — ${verified} verified, ${unverifiable} unverifiable, ${declared} still declared"
+    logInfo "Device Health Monitor: deep verification scan complete — ${verified} verified, ${unverifiable} unverifiable, ${declared} still declared"
 
     runIn(30, "scanAllDevices", [overwrite: true])
-    log.info "Device Health Monitor: running scan to check for ping responses — waiting 30s for device responses"
+    logInfo "Device Health Monitor: running scan to check for ping responses — waiting 30s for device responses"
 }
 
 // ============================================================
@@ -1522,7 +1531,7 @@ def scanAllDevices() {
         return
     }
 
-    log.info "Device Health Monitor: scan started — ${devList.size()} device(s) queued"
+    logInfo "Device Health Monitor: scan started — ${devList.size()} device(s) queued"
     state.isScanning    = true
     state.scanStartTime = nowMs
     state.tempResults   = []
@@ -1542,7 +1551,7 @@ def purgeOrphanedState(devList) {
     def activeIds = devList.collect { it.id as String } as Set
 
     ["history", "health", "verifying", "stateHistory", "fairHold",
-     "deviceCapabilities", "dropHistory", "prevHealth", "deviceLocations", "deadBattery", "driverOffline"].each { stateKey ->
+     "deviceCapabilities", "dropHistory", "prevHealth", "deviceLocations", "deadBattery", "driverOffline", "radioOnly"].each { stateKey ->
         def map = state[stateKey]
         if (map instanceof Map) {
             def stale = map.keySet().findAll { !((it as String) in activeIds) }
@@ -1585,7 +1594,7 @@ def processScanChunk() {
     def remaining    = queue.drop(chunkSize)
     state.scanQueue  = remaining
     def batchNum     = Math.ceil(totalDevices / chunkSize).toInteger() - Math.ceil(remaining.size() / chunkSize).toInteger()
-    log.info "Device Health Monitor: scanning batch ${batchNum} — ${chunk.size()} devices (${remaining.size()} remaining)"
+    logInfo "Device Health Monitor: scanning batch ${batchNum} — ${chunk.size()} devices (${remaining.size()} remaining)"
 
     def allDevs         = getAllMonitoredDevices()
     def intervalStr     = settings?.scanInterval ?: "3"
@@ -1607,8 +1616,10 @@ def processScanChunk() {
             def actMs        = lastActivity ? safeTime(lastActivity) : null
             // v1.7.2: a driver flipping to offline bumps Last Activity, but the device didn't speak
             def offRep       = driverOfflineReport(device)
-            if (actMs && offRep && Math.abs(actMs - (offRep.at as Long)) < 5000) actMs = (data?.lastSeen ?: actMs) as Long
+            Long evAct       = actMs
+            if (actMs && offRep && Math.abs(actMs - (offRep.at as Long)) < 5000) { actMs = (data?.lastSeen ?: actMs) as Long; evAct = null }
             def lastSeen     = actMs ?: now()
+            Long evState     = null
             // v1.5.6: also consider lastKnownStateDate from previous scans
             def capMapPre  = state.deviceCapabilities ?: [:]
             def prevKnown  = capMapPre[id as String]?.lastKnownStateDate as Long ?: 0
@@ -1616,6 +1627,7 @@ def processScanChunk() {
 
             try {
                 def stateDate = device.currentStates?.findAll { !(it.name in DRIVER_HEALTH_ATTRS) }?.collect { safeTime(it.date) }?.findAll { it }?.max()
+                evState = stateDate as Long
                 if (stateDate && stateDate > lastSeen) lastSeen = stateDate
                 // v1.5.6: store lastKnownStateDate so refresh responses advance lastSeen (Z-Wave)
                 def capMapLS  = state.deviceCapabilities ?: [:]
@@ -1631,6 +1643,9 @@ def processScanChunk() {
             } catch (e) {
                 if (debugEnabled()) log.debug "currentStates date check error for ${device.displayName}: ${e.message}"
             }
+
+            // v1.8.0: newest real event, before radio data is merged in
+            Long eventSeen = [evAct, prevKnown ?: null, evState].findAll { it }.max() as Long
 
             // v1.7.0: a reply the hub radio heard counts as activity even with no event
             if (protocol == "Z-Wave" || protocol == "Zigbee") {
@@ -1728,6 +1743,7 @@ def processScanChunk() {
                 }
                 data.protocol     = protocol
                 state.history[id] = data
+                trackEventPace(device, eventSeen, minGate)
                 updateHealth(device)
             }
             updateStateTracking(device)
@@ -1751,7 +1767,7 @@ def finalizeScan() {
     state.tempResults   = []
     state.scanQueue     = []
     state.lastScanCompleted = now()
-    log.info "Device Health Monitor: scan complete — all devices processed"
+    logInfo "Device Health Monitor: scan complete — all devices processed"
 }
 
 // ============================================================
@@ -1774,7 +1790,82 @@ private Integer deadBatteryPct(device) {
 def updateHealth(device, boolean allowProbe = true) {
     updateHealthCore(device, allowProbe)
     applyDeadBattery(device)
+    applyRadioOnly(device)
     applyDriverOffline(device, allowProbe)
+}
+
+// v1.8.0: event pace learned from events alone (radio chatter excluded), kept in history as evLast + evGaps (minutes, last 10)
+private void trackEventPace(device, Long evSeen, minGate) {
+    if (!(getProtocol(device) in ["Zigbee", "Z-Wave"])) return
+    def data = state.history[device.id]
+    if (!data) return
+    if (data.evGaps == null) {
+        data.evGaps = seedEventGaps(device, minGate)
+        data.evLast = evSeen
+    } else if (evSeen && evSeen > ((data.evLast ?: 0) as Long)) {
+        if (data.evLast) {
+            int gap = ((evSeen - (data.evLast as Long)) / 60000) as int
+            if (gap >= minGate) {
+                data.evGaps << gap
+                if (data.evGaps.size() > 10) data.evGaps.remove(0)
+            }
+        }
+        data.evLast = evSeen
+    }
+    state.history[device.id] = data
+}
+
+/** Gaps between the last 30 days of events, so existing installs (and already-stuck devices) start with a pace. */
+private List seedEventGaps(device, minGate) {
+    List gaps = []
+    try {
+        def times = device.eventsSince(new Date(now() - 30L * 86400000), [max: 100])
+            ?.findAll { !(it.name in DRIVER_HEALTH_ATTRS) }?.collect { safeTime(it.date) }?.findAll { it }?.unique()?.sort()
+        Long prev = null
+        times?.each { t ->
+            if (prev != null) {
+                int g = ((t - prev) / 60000) as int
+                if (g >= minGate) gaps << g
+            }
+            prev = t
+        }
+    } catch (e) {
+        if (debugEnabled()) log.debug "${device.displayName}: event history read failed (${e.message})"
+    }
+    return gaps.size() > 10 ? gaps.drop(gaps.size() - 10) : gaps
+}
+
+/** Last event time when the hub radio still hears a regular reporter whose events stopped for the Offline threshold, else null. */
+private Long radioOnlySince(device) {
+    def proto = getProtocol(device)
+    if (!(proto in ["Zigbee", "Z-Wave"])) return null
+    if ((proto == "Zigbee" && state.zbDataIssue) || (proto == "Z-Wave" && state.zwDataIssue)) return null
+    def data   = state.history?.get(device.id)
+    List gaps  = data?.evGaps ?: []
+    Long evLast = data?.evLast as Long
+    if (!evLast || gaps.size() < 3) return null
+    long thrMs = ((settings?.offlineThresholdHours ?: 168).toString().toBigDecimal() * 3600000).toLong()
+    // Regular reporter: normally reports at least 3x within the Offline threshold
+    if ((gaps.sum() / gaps.size()) * 60000 * 3 > thrMs) return null
+    Long heard = zwLastHeard(device)
+    if (!heard || heard <= evLast || now() - heard >= thrMs) return null
+    if (now() - evLast < thrMs) return null
+    return evLast
+}
+
+// v1.8.0: radio alive but events stopped is Poor at best, with a note. Clears on the next real event.
+private void applyRadioOnly(device) {
+    def key   = device.id as String
+    def ro    = state.radioOnly ?: [:]
+    def since = radioOnlySince(device)
+    if (since == null) {
+        if (ro.containsKey(key)) { ro.remove(key); state.radioOnly = ro }
+        return
+    }
+    if (!ro.containsKey(key)) logInfo "Device Health Monitor: ${device.displayName}, radio seen but no events (last event ${formatTimeAgo(since)})"
+    ro[key] = since
+    state.radioOnly = ro
+    if (!(state.health?.get(device.id) in ["Poor", "Offline", "Pending"])) state.health[device.id] = "Poor"
 }
 
 /** [attr, at] when the driver's healthStatus or onlineStatus reads offline, else null. */
@@ -2045,7 +2136,7 @@ private void updateHealthCore(device, boolean allowProbe) {
 
     if (getStateVerified(id as String)) {
         state.verifying[id] = "state_verified"
-        log.info "Device Health Monitor: ${currentHealth} — ${device.displayName} self-verified via state change event (no ping needed)"
+        logInfo "Device Health Monitor: ${currentHealth} — ${device.displayName} self-verified via state change event (no ping needed)"
         def capMapSV  = state.deviceCapabilities ?: [:]
         def capDataSV = capMapSV[id as String] ?: [:]
         if (capDataSV.pingTrustSource == "weak" || capDataSV.weakTrustFirstGranted || capDataSV.weakTrustCooldownUntil) {
@@ -2119,7 +2210,7 @@ private void updateHealthCore(device, boolean allowProbe) {
     }
     state.verifying[id] = verifyMethod
     if (verifyMethod in ["refresh", "ping"]) {
-        log.info "Device Health Monitor: ${currentHealth} — sent ${verifyMethod} to ${device.displayName}"
+        logInfo "Device Health Monitor: ${currentHealth} — sent ${verifyMethod} to ${device.displayName}"
     } else if (verifyMethod in ["none", "virtual", "hue_no_bridge", "failed"]) {
         if (debugEnabled()) log.debug "Device Health Monitor: ${currentHealth} — cannot verify ${device.displayName} (${verifyMethod})"
     }
@@ -2192,6 +2283,8 @@ private Map healthInfo(device) {
     if (bat != null) tags << "🪫 Battery ${bat}%".toString()
     def drv  = state.driverOffline?.get(id)
     if (drv) tags << (drv.responding ? "Driver reports offline, but device is responding" : "Driver reports offline")
+    def ro   = state.radioOnly?.get(id)
+    if (ro) tags << "📡 Radio seen, last event ${formatTimeAgo(ro)}".toString()
     if (isRepeatDrops(id)) tags << "🔄 Repeat drops"
     else if (isLowActivity(id) && h in ["Fair", "Poor", "Offline"]) tags << "Low activity"
 
@@ -2424,6 +2517,7 @@ def serveDataEndpoint() {
                 verifyMethod:    verifyMethod ?: "",
                 lowActivity:     isLowActivity(device.id as String),
                 deadBattery:     state.deadBattery?.get(device.id as String),
+                radioOnly:       state.radioOnly?.get(device.id as String) ? formatTimeAgo(state.radioOnly[device.id as String]) : "",
                 driverOffline:   state.driverOffline?.get(device.id as String) ? (state.driverOffline[device.id as String].responding ? "responding" : "offline") : ""
             ]
         }
@@ -2576,6 +2670,7 @@ function healthLabel(dev) {
 
     let suffix = '';
     if (dev.deadBattery !== null && dev.deadBattery !== undefined) suffix += ' <span style="color:#ef4444;font-size:10px;">🪫 Battery ' + dev.deadBattery + '%</span>';
+    if (dev.radioOnly) suffix += ' <span style="color:#ef4444;font-size:10px;">📡 Radio seen, last event ' + dev.radioOnly + '</span>';
     if (dev.driverOffline === 'offline') suffix += ' <span style="color:#ef4444;font-size:10px;">Driver reports offline</span>';
     else if (dev.driverOffline === 'responding') suffix += ' <span style="color:#94a3b8;font-size:10px;">Driver reports offline, but device is responding</span>';
     if (dev.repeatDrops) suffix += ' <span style="color:#f97316;font-size:10px;">🔄 Repeat Drops</span>';
@@ -2867,7 +2962,9 @@ def scheduledSummary(boolean manual = false) {
                 def batStr    = bat != null ? ", battery ${bat}%" : ""
                 def drv       = state.driverOffline?.get(device.id as String)
                 def drvStr    = drv && !drv.responding ? ", driver reports offline" : ""
-                sections[h].list << "${device.displayName.trim()}${stateStr}${lastStr}${batStr}${drvStr}"
+                def ro        = state.radioOnly?.get(device.id as String)
+                def roStr     = ro ? ", radio seen, last event ${formatTimeAgo(ro)}" : ""
+                sections[h].list << "${device.displayName.trim()}${stateStr}${lastStr}${batStr}${drvStr}${roStr}"
             }
         }
     }
@@ -3078,6 +3175,8 @@ def mainPage() {
 
         helpAndSupportSection()
         section {
+            input "infoMode", "bool", title: "Info logging <span style='font-size:13px;color:var(--text-color-secondary, #6b7280);'>· scan and verification lines, warnings always log</span>",
+                  defaultValue: true, submitOnChange: true
             input "debugMode", "bool", title: "Debug logging <span style='font-size:13px;color:var(--text-color-secondary, #6b7280);'>· turns off after 30 minutes</span>",
                   defaultValue: false, submitOnChange: true
         }
@@ -4369,6 +4468,10 @@ private List tipsTopics() {
         [id: "bridges", label: "Hue and Konnected", title: "Hue and Konnected devices", group: "Verification", icon: "pi-sitemap",
             body: "<p>Add your <b>Hue Bridge</b> (or CoCoHue Bridge) and <b>Konnected Alarm Panel</b> to monitored devices. " +
                 "When a bulb or sensor goes Poor or Offline, the app refreshes the bridge or panel. That's a real network round-trip, so success confirms the device immediately, even if it has sat untouched for weeks.</p>"],
+        [id: "radioonly", label: "Radio seen, no events", title: "Radio seen, no events", group: "Verification", icon: "pi-volume-off",
+            body: "<p>The hub radio hearing a device proves it's reachable, not that it's working. A stuck radar or a contact sensor near the end of its battery can keep talking to the hub for weeks after its real reports stop.</p>" +
+                "<p>When a Zigbee or Z-Wave device that normally reports regularly has sent no events for your <b>Offline threshold</b>, but the radio still hears it, it shows <b>Poor</b> with <b>Radio seen, no events</b>. A power cycle or new battery usually fixes it, and the next real event clears it.</p>" +
+                "<p>Devices that are naturally quiet, like a rarely used plug, never trip this. Their pace is learned from events alone, so radio chatter can't hide a device that stopped reporting.</p>"],
         [id: "locations", label: "Locations", title: "Locations", group: "Management", icon: "pi-tags",
             body: "<p>Locations are optional room or area groupings (Kitchen, Garage, Upstairs) that make the Summary, portal, and notifications easier to scan. " +
                 "They aren't for multiple hubs, and one location holding every device doesn't add anything.</p>" +
@@ -4387,7 +4490,7 @@ private List tipsTopics() {
         [id: "unknown", label: "Unknown devices", title: "Devices shown as Unknown", group: "Troubleshooting", icon: "pi-question-circle",
             body: "<p>Devices whose connection type can't be read at all are skipped, and counted under <b>Monitored devices</b>. Devices detected as Hub Mesh, LAN, Virtual, or Hub Variable are still monitored; correct their connection type in <b>Device actions</b> if it's wrong.</p>"],
         [id: "logging", label: "Logging", title: "Logging", group: "Troubleshooting", icon: "pi-file",
-            body: "<p>Scans log a start and finish line at info level so you can confirm they run. <b>Debug logging</b> (the toggle at the bottom of the main page) adds step-by-step detail and turns itself off after 30 minutes.</p>"]
+            body: "<p>Scans log a start and finish line at info level so you can confirm they run. <b>Info logging</b> (bottom of the main page) is on by default; turn it off to keep your logs quiet. Warnings and errors still log. <b>Debug logging</b> adds step-by-step detail and turns itself off after 30 minutes.</p>"]
     ]
 }
 
