@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 SOURCE_DIR = Path(__file__).resolve().parent
-DEFAULT_TARGET = SOURCE_DIR.parent.parent / "driversAndApps_2.5.2"
+DEFAULT_TARGET = SOURCE_DIR.parent.parent / "driversAndApps_2.5.3"
 NAMESPACE = "hubitat"
 DESTINATION_FOLDER = "jdthomas24"
 DESTINATION_PREFIX = "jdthomas24_"
@@ -79,7 +79,7 @@ def main() -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", type=Path, default=DEFAULT_TARGET,
-                        help="driversAndApps checkout (default: sibling driversAndApps_2.5.2)")
+                        help="driversAndApps checkout (default: sibling driversAndApps_2.5.3)")
     parser.add_argument("--check", action="store_true", help="report drift without writing")
     args = parser.parse_args()
     target = args.target.resolve()

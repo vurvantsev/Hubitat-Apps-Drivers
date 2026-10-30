@@ -2,8 +2,8 @@
 
 The five Groovy files in this directory are the only editable Reolink sources.
 `jdthomas24_sync_builtin.py` copies the app to
-`driversAndApps_2.5.2/apps/src/jdthomas24/jdthomas24_ParentApp.groovy` and
-the four drivers to `driversAndApps_2.5.2/devicetypes/src/jdthomas24/`,
+`driversAndApps_2.5.3/apps/src/jdthomas24/jdthomas24_ParentApp.groovy` and
+the four drivers to `driversAndApps_2.5.3/devicetypes/src/jdthomas24/`,
 each with a `jdthomas24_` filename prefix.
 It changes the Groovy `namespace` declarations and `addChildDevice` namespace
 arguments to `hubitat`. It leaves the original files and the HPM
@@ -23,7 +23,7 @@ generated-file header. Review and commit changes in each repository separately.
 The generated files should never be edited directly; rerun the script after
 every source change.
 
-Pass `--target /path/to/driversAndApps_2.5.2` if the checkout is elsewhere.
+Pass `--target /path/to/driversAndApps_2.5.3` if the checkout is elsewhere.
 
 ## On-demand upstream update
 
@@ -52,7 +52,7 @@ then rerun the command. If compilation fails, fix and commit the source first.
 The built-in copies remain uncommitted for review in `driversAndApps`; commit
 those generated changes before the next update. If a copy step fails after the
 push, fix the destination issue and run the copy script directly, then `--check`.
-Use `--target /path/to/driversAndApps_2.5.2` to override the target checkout.
+Use `--target /path/to/driversAndApps_2.5.3` to override the target checkout.
 
 Compilation uses `--classpath`, then the `CLASSPATH` environment variable, or
 an automatically detected single sibling `hub_*/build/classes/groovy/main`
